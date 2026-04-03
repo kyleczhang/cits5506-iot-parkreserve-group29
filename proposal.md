@@ -42,7 +42,8 @@
 
 - Reduced traffic congestion and fuel consumption in parking areas — studies estimate that 30% of urban traffic is caused by parking searches [2].
 - Improved user satisfaction through a seamless reserve-and-park workflow.
-- Demonstrates a practical, scalable IoT system integrating sensing, actuation, wireless communication, and web-based user interaction — applicable to university campuses, shopping centres, and hospital facilities.
+- Demonstrates a practical, scalable three-tier IoT architecture (cloud backend, edge gateway, device layer) integrating sensing, actuation, wireless communication, and web-based user interaction — applicable to university campuses, shopping centres, and hospital facilities.
+- Remote access via a cloud-hosted dashboard means users can reserve a spot from anywhere with internet access, not just within the parking facility's local network.
 
 ---
 
@@ -89,6 +90,8 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 ### 5.1 Design Approach (Step-by-Step)
 
+The system uses a **three-tier architecture**: a cloud-hosted backend for business logic and user access, a Raspberry Pi edge gateway for local device control, and ESP32 sensor/actuator nodes at each parking spot.
+
 1. **Sensor Integration:** Mount ultrasonic distance sensors (HC-SR04) at each parking spot to continuously measure the distance to the ground. A vehicle presence is detected when the measured distance drops below a calibrated threshold.
 
 2. **Status Indication:** Each spot has an RGB LED module that displays:
@@ -96,61 +99,91 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
    - **Red** — spot is occupied (vehicle detected)
    - **Yellow** — spot is reserved via the web dashboard
 
-3. **Barrier Actuation:** A servo motor at each reservable spot controls a miniature barrier arm. When a reservation is made, the barrier rises (servo rotates to blocking position). When the reserved user arrives and checks in via the dashboard, the barrier lowers.
+3. **Barrier Actuation and Audio Feedback:** A servo motor at each spot controls a miniature barrier arm, and a piezo buzzer provides audio confirmation. When a reservation is made, the barrier rises (servo rotates to blocking position) with a confirmation tone. When the reserved user arrives and checks in via the dashboard, the barrier lowers with a distinct tone.
 
-4. **Local Processing (ESP32):** Each ESP32 node reads its ultrasonic sensor, drives its RGB LED, and controls its servo motor. It connects to the central server via WiFi using the MQTT protocol, publishing occupancy status and subscribing to reservation commands.
+4. **Local Processing (ESP32):** Each ESP32 node reads its ultrasonic sensor, drives its RGB LED, and controls its servo motor. It connects to the Raspberry Pi gateway via local WiFi using MQTT, publishing occupancy status and subscribing to control commands.
 
-5. **Central Server (MQTT Broker + Web Backend):** A Raspberry Pi or laptop runs:
-   - An MQTT broker (Mosquitto) to relay messages between ESP32 nodes and the backend.
-   - A Flask (Python) web application that serves the dashboard, manages reservation logic, and stores spot states in an SQLite database.
+5. **Edge Gateway (Raspberry Pi):** A Raspberry Pi on the same local network as the ESP32 nodes runs:
+   - A local Mosquitto MQTT broker for fast, reliable communication with ESP32 devices.
+   - A control logic service (Python) that processes sensor data from ESP32 nodes, drives LED/barrier commands locally, and bridges data to/from the cloud backend via a cloud MQTT broker (HiveMQ Cloud).
+   - This ensures low-latency local control (sensor → LED/barrier response stays on the LAN) and continued operation even if the cloud connection is temporarily interrupted.
 
-6. **Web Dashboard:** A browser-based interface where users can:
+6. **Cloud Backend (AWS):** A Flask (Python) web application deployed on AWS (EC2 or Elastic Beanstalk) that:
+   - Connects to the cloud MQTT broker to receive spot status updates forwarded by the Raspberry Pi and to publish reservation commands.
+   - Manages reservation business logic and persists state in a PostgreSQL (or SQLite) database.
+   - Serves the web dashboard over a public URL, accessible from anywhere with internet access.
+
+7. **Web Dashboard:** A browser-based interface accessible remotely where users can:
    - View real-time occupancy status of all spots (colour-coded map).
-   - Reserve an available spot (changes LED to yellow, raises barrier).
+   - Reserve an available spot — command flows from cloud → Raspberry Pi → ESP32 (LED turns yellow, barrier rises).
    - Cancel a reservation (barrier lowers, LED returns to green).
 
-7. **System Integration and Testing:** Connect all subsystems, test end-to-end flows (detection → display → reservation → barrier actuation), and calibrate sensor thresholds.
+8. **System Integration and Testing:** Connect all three tiers, test end-to-end flows (detection → local control → cloud sync → remote reservation → barrier actuation), and calibrate sensor thresholds.
 
 ### 5.2 System Architecture (Block Diagram)
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        WEB DASHBOARD (Flask)                        │
-│   ┌──────────────┐  ┌──────────────────┐  ┌─────────────────────┐  │
-│   │ Real-Time Map │  │ Reservation Mgmt │  │ SQLite Database     │  │
-│   └──────┬───────┘  └────────┬─────────┘  └──────────┬──────────┘  │
-│          └───────────────────┼────────────────────────┘             │
-│                              │ HTTP                                  │
-└──────────────────────────────┼──────────────────────────────────────┘
-                               │
-┌──────────────────────────────┼──────────────────────────────────────┐
-│                    MQTT BROKER (Mosquitto)                           │
-│            Topics: spot/+/status, spot/+/command                     │
-└──────┬───────────────────────┼──────────────────────────┬───────────┘
-       │ WiFi/MQTT             │ WiFi/MQTT                │ WiFi/MQTT
-       ▼                       ▼                          ▼
-┌──────────────┐     ┌──────────────┐            ┌──────────────┐
-│  ESP32 Node  │     │  ESP32 Node  │    ...     │  ESP32 Node  │
-│   (Spot 1)   │     │   (Spot 2)   │            │   (Spot N)   │
-│              │     │              │            │              │
-│ ┌──────────┐ │     │ ┌──────────┐ │            │ ┌──────────┐ │
-│ │ HC-SR04  │ │     │ │ HC-SR04  │ │            │ │ HC-SR04  │ │
-│ │ Sensor   │ │     │ │ Sensor   │ │            │ │ Sensor   │ │
-│ └──────────┘ │     │ └──────────┘ │            │ └──────────┘ │
-│ ┌──────────┐ │     │ ┌──────────┐ │            │ ┌──────────┐ │
-│ │ RGB LED  │ │     │ │ RGB LED  │ │            │ │ RGB LED  │ │
-│ └──────────┘ │     │ └──────────┘ │            │ └──────────┘ │
-│ ┌──────────┐ │     │ ┌──────────┐ │            │ ┌──────────┐ │
-│ │ Servo    │ │     │ │ Servo    │ │            │ │ Servo    │ │
-│ │ Barrier  │ │     │ │ Barrier  │ │            │ │ Barrier  │ │
-│ └──────────┘ │     │ └──────────┘ │            │ └──────────┘ │
-└──────────────┘     └──────────────┘            └──────────────┘
+╔═══════════════════════════════════════════════════════════════════════╗
+║                      CLOUD TIER (AWS)                                 ║
+║                                                                       ║
+║  ┌────────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ║
+║  │  Web Dashboard     │  │  Flask Backend    │  │  PostgreSQL /    │  ║
+║  │  (HTML/CSS/JS)     │◄─┤  (Business Logic, │──┤  SQLite Database │  ║
+║  │  Public URL        │  │   REST API)       │  │  (Reservations)  │  ║
+║  └────────────────────┘  └────────┬─────────┘  └──────────────────┘  ║
+║                                   │                                    ║
+║                          ┌────────┴─────────┐                         ║
+║                          │  Cloud MQTT       │                         ║
+║                          │  Broker (HiveMQ)  │                         ║
+║                          └────────┬──────────┘                         ║
+╚═══════════════════════════════════╪════════════════════════════════════╝
+                                    │ Internet (MQTT over TLS)
+                                    │
+╔═══════════════════════════════════╪════════════════════════════════════╗
+║              EDGE GATEWAY (Raspberry Pi)                               ║
+║                                   │                                    ║
+║  ┌────────────────────────────────┴──────────────────────────────┐    ║
+║  │  Control Logic Service (Python)                                │    ║
+║  │  - Bridges local MQTT ↔ cloud MQTT                            │    ║
+║  │  - Processes sensor data, drives LED/barrier commands locally  │    ║
+║  │  - Forwards status to cloud; receives reservation commands     │    ║
+║  └────────────────────────────────┬──────────────────────────────┘    ║
+║                                   │                                    ║
+║                          ┌────────┴──────────┐                         ║
+║                          │  Local MQTT Broker │                         ║
+║                          │  (Mosquitto)       │                         ║
+║                          └────────┬──────────┘                         ║
+╚═══════════════════════════════════╪════════════════════════════════════╝
+                                    │ Local WiFi (MQTT)
+               ┌────────────────────┼────────────────────┐
+               │                    │                     │
+               ▼                    ▼                     ▼
+       ┌──────────────┐    ┌──────────────┐      ┌──────────────┐
+       │  ESP32 Node  │    │  ESP32 Node  │ ...  │  ESP32 Node  │
+       │   (Spot 1)   │    │   (Spot 2)   │      │   (Spot N)   │
+       │              │    │              │      │              │
+       │ ┌──────────┐ │    │ ┌──────────┐ │      │ ┌──────────┐ │
+       │ │ HC-SR04  │ │    │ │ HC-SR04  │ │      │ │ HC-SR04  │ │
+       │ │ Sensor   │ │    │ │ Sensor   │ │      │ │ Sensor   │ │
+       │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
+       │ ┌──────────┐ │    │ ┌──────────┐ │      │ ┌──────────┐ │
+       │ │ RGB LED  │ │    │ │ RGB LED  │ │      │ │ RGB LED  │ │
+       │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
+       │ ┌──────────┐ │    │ ┌──────────┐ │      │ ┌──────────┐ │
+       │ │ Servo    │ │    │ │ Servo    │ │      │ │ Servo    │ │
+       │ │ Barrier  │ │    │ │ Barrier  │ │      │ │ Barrier  │ │
+       │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
+       │ ┌──────────┐ │    │ ┌──────────┐ │      │ ┌──────────┐ │
+       │ │ Piezo    │ │    │ │ Piezo    │ │      │ │ Piezo    │ │
+       │ │ Buzzer   │ │    │ │ Buzzer   │ │      │ │ Buzzer   │ │
+       │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
+       └──────────────┘    └──────────────┘      └──────────────┘
 ```
 
 **Data Flow:**
 
-- **Uplink (Sensor → Server):** ESP32 reads HC-SR04 distance → determines occupied/available → publishes to MQTT topic `spot/<id>/status`.
-- **Downlink (Server → Actuator):** Web backend sends reservation command → MQTT topic `spot/<id>/command` → ESP32 sets LED to yellow and raises servo barrier.
+- **Uplink (Sensor → Cloud):** ESP32 reads HC-SR04 distance → publishes `occupied`/`available` to local MQTT topic `spot/<id>/status` → Raspberry Pi control service receives it, updates LED/barrier locally, and forwards status to cloud MQTT broker → Flask backend updates database and dashboard.
+- **Downlink (Reservation → Actuator):** User reserves a spot on the web dashboard → Flask publishes command to cloud MQTT topic `spot/<id>/command` → Raspberry Pi receives command via cloud MQTT → Raspberry Pi publishes to local MQTT → ESP32 sets LED to yellow and raises servo barrier.
 
 ### 5.3 Subsystem Description
 
@@ -158,7 +191,7 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 - **Hardware:** HC-SR04 ultrasonic sensor per spot, connected to ESP32 GPIO pins (trigger + echo).
 - **Software:** Arduino C++ firmware on ESP32. Periodically triggers ultrasonic pulse, measures echo time, calculates distance. If distance < threshold (e.g., 15 cm for a scale model), spot is occupied.
-- **Output:** Publishes `occupied` or `available` status to MQTT broker every 2 seconds.
+- **Output:** Publishes `occupied` or `available` status to the local MQTT broker (on Raspberry Pi) every 2 seconds.
 
 #### Subsystem B: Indicator Unit (Hardware + Firmware)
 
@@ -167,29 +200,40 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
     - `available` → green
     - `occupied` → red
     - `reserved` → yellow
-- **Interdependence:** Depends on Subsystem A (sensor reading) and Subsystem D (reservation commands from server).
+- **Interdependence:** Depends on Subsystem A (sensor reading) and commands from Subsystem D (relayed by the Raspberry Pi gateway).
 
-#### Subsystem C: Barrier Unit (Hardware + Firmware)
+#### Subsystem C: Barrier and Audio Feedback Unit (Hardware + Firmware)
 
-- **Hardware:** SG90 micro servo motor per reservable spot. Servo arm acts as a miniature barrier gate.
-- **Software:** On receiving a `reserve` command via MQTT, the ESP32 rotates the servo to 90° (barrier up). On `cancel` or `check-in`, it rotates to 0° (barrier down).
-- **Interdependence:** Triggered by Subsystem D (server commands). Must coordinate with Subsystem A — if a vehicle is detected while barrier is up, alert the server of a conflict.
+- **Hardware:** SG90 micro servo motor and mini piezo buzzer per spot. Servo arm acts as a miniature barrier gate; buzzer provides audio feedback.
+- **Software:** On receiving a `reserve` command via local MQTT (from Raspberry Pi), the ESP32 rotates the servo to 90° (barrier up) and sounds a short confirmation tone. On `cancel` or `check-in`, it rotates to 0° (barrier down) with a distinct tone. The buzzer also alerts on conflict events (e.g., vehicle detected at a reserved spot).
+- **Interdependence:** Triggered by Subsystem D (commands originating from cloud, relayed by Raspberry Pi). Must coordinate with Subsystem A — if a vehicle is detected while barrier is up, alert the gateway of a conflict.
 
 #### Subsystem D: Communication Layer (Software)
 
-- **Protocol:** MQTT over WiFi. The ESP32 connects to the local WiFi network and communicates with the Mosquitto broker running on the server.
-- **Topics:**
+- **Local MQTT (ESP32 ↔ Raspberry Pi):** Each ESP32 connects to the Mosquitto broker running on the Raspberry Pi over local WiFi.
     - `spot/<id>/status` — published by ESP32 (sensor data uplink)
-    - `spot/<id>/command` — published by server (reservation commands downlink)
-- **QoS:** Level 1 (at least once delivery) to ensure reservation commands are not lost.
-- **Interdependence:** Bridges Subsystems A/B/C (edge devices) with Subsystem E (server).
+    - `spot/<id>/command` — published by Raspberry Pi control service (actuator commands downlink)
+- **Cloud MQTT (Raspberry Pi ↔ AWS):** The Raspberry Pi's control service connects to a cloud MQTT broker (HiveMQ Cloud free tier) over TLS-encrypted internet connection.
+    - `cloud/spot/<id>/status` — forwarded by Pi to cloud (status uplink)
+    - `cloud/spot/<id>/command` — published by Flask backend (reservation commands downlink)
+- **QoS:** Level 1 (at least once delivery) on both local and cloud MQTT to ensure commands are not lost.
+- **Interdependence:** Bridges Subsystems A/B/C (ESP32 devices) with Subsystem F (cloud backend) through Subsystem E (Raspberry Pi gateway).
 
-#### Subsystem E: Web Backend and Dashboard (Software)
+#### Subsystem E: Edge Gateway (Raspberry Pi — Hardware + Software)
 
-- **Backend:** Python Flask application. Receives MQTT messages via the `paho-mqtt` library, updates spot states in an SQLite database, and exposes REST API endpoints for the frontend.
-- **Frontend:** HTML/CSS/JavaScript dashboard served by Flask. Displays a colour-coded parking map with real-time updates (via periodic polling or WebSocket). Users can click a spot to reserve or cancel.
-- **Database:** SQLite stores spot states, reservation records (user, spot, timestamp, status).
-- **Interdependence:** Depends on Subsystem D (MQTT) for real-time sensor data. Sends commands back through Subsystem D to control Subsystems B and C.
+- **Hardware:** Raspberry Pi 4 (or 3B+) connected to the same local WiFi network as ESP32 nodes, and to the internet.
+- **Software:** Runs two services:
+    1. **Mosquitto MQTT broker** — handles all local ESP32 communication.
+    2. **Control logic service (Python)** — subscribes to local `spot/+/status` topics, processes sensor data, publishes LED/barrier commands to local `spot/<id>/command` topics, and bridges messages to/from the cloud MQTT broker.
+- **Key benefit:** Local control loop (sensor → LED/barrier) operates with low latency on the LAN (~milliseconds). If the cloud connection drops, the Pi continues to manage spot detection and LED updates locally; reservations queue until connectivity resumes.
+- **Interdependence:** Acts as the central bridge between the device layer (Subsystems A/B/C) and the cloud layer (Subsystem F).
+
+#### Subsystem F: Cloud Backend and Dashboard (Software — AWS)
+
+- **Backend:** Python Flask application deployed on AWS (EC2 or Elastic Beanstalk). Connects to the cloud MQTT broker via the `paho-mqtt` library. Receives spot status updates, manages reservation business logic, and exposes REST API endpoints.
+- **Frontend:** HTML/CSS/JavaScript dashboard served by Flask over a public URL. Displays a colour-coded parking map with real-time updates (via periodic polling or WebSocket). Users can view availability and reserve/cancel spots from anywhere with internet access.
+- **Database:** PostgreSQL (AWS RDS) or SQLite stores spot states, reservation records (user, spot, timestamp, status).
+- **Interdependence:** Depends on Subsystem D (cloud MQTT) for real-time sensor data from the Raspberry Pi. Sends reservation commands back through Subsystem D → Subsystem E → ESP32 nodes.
 
 ---
 
@@ -197,11 +241,11 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 | Name | Work Assigned | Reason for the Assignment |
 |------|--------------|--------------------------|
-| Nyx Chen | **Subsystem E (Frontend):** Web dashboard UI, real-time parking map, reservation interface | Experience in web development (HTML/CSS/JS); strong UI/UX design skills |
-| Fahim Abrar | **Subsystem E (Backend):** Flask server, REST API, SQLite database, MQTT client integration | Background in Python and server-side programming |
+| Nyx Chen | **Subsystem F (Frontend):** Web dashboard UI, real-time parking map, reservation interface | Experience in web development (HTML/CSS/JS); strong UI/UX design skills |
+| Fahim Abrar | **Subsystem F (Backend):** Flask server, REST API, database, cloud MQTT client integration, AWS deployment | Background in Python and server-side programming; familiarity with cloud services |
 | Riya Sakhiya | **Subsystem A + B:** Ultrasonic sensor integration, RGB LED control, ESP32 firmware for sensing and display | Interest and coursework experience in embedded systems and Arduino programming |
-| Yuan Cong Yuan | **Subsystem C + D:** Servo barrier control, MQTT communication setup (broker + ESP32 client) | Experience with networking protocols and microcontroller programming |
-| Cheng Zhang | **System Integration + Testing:** End-to-end integration of all subsystems, calibration, testing, and project documentation | Strong debugging and system-level thinking skills; coordinates across sub-teams |
+| Yuan Cong Yuan | **Subsystem C + D + E:** Servo barrier control, MQTT communication setup (local + cloud brokers), Raspberry Pi gateway control logic | Experience with networking protocols and microcontroller programming |
+| Cheng Zhang | **System Integration + Testing:** End-to-end integration across all three tiers (cloud ↔ gateway ↔ devices), calibration, testing, and project documentation | Strong debugging and system-level thinking skills; coordinates across sub-teams |
 
 > *Note: This is an initial distribution based on team discussion. Roles may be adjusted during the project as needed.*
 
@@ -213,44 +257,54 @@ The project spans **8 weeks** from proposal approval to final demonstration. Tas
 
 | Week | Dates | Task | Sub-Team | Dependencies |
 |------|-------|------|----------|-------------|
-| 1 | Apr 7 – Apr 13 | Environment setup: install Arduino IDE, Flask, Mosquitto; configure ESP32 WiFi connectivity | All members | None (parallel) |
+| 1 | Apr 7 – Apr 13 | Environment setup: install Arduino IDE, Flask, Mosquitto on Raspberry Pi; configure ESP32 WiFi; set up HiveMQ Cloud account and AWS account | All members | None (parallel) |
 | 2 | Apr 14 – Apr 20 | **Subsystem A:** HC-SR04 sensor reading and distance calibration on ESP32 | Riya | Week 1 complete |
-| 2 | Apr 14 – Apr 20 | **Subsystem D:** Set up Mosquitto MQTT broker; ESP32 MQTT publish/subscribe test | Yuan Cong | Week 1 complete |
-| 2 | Apr 14 – Apr 20 | **Subsystem E (Backend):** Flask project scaffold, SQLite schema, basic REST API | Fahim | Week 1 complete |
-| 3 | Apr 21 – Apr 27 | **Subsystem A+D:** Sensor data published to MQTT and received by backend | Riya + Yuan Cong | Week 2 Subsystem A + D |
-| 3 | Apr 21 – Apr 27 | **Subsystem B:** RGB LED control based on sensor state | Riya | Week 2 Subsystem A |
-| 3 | Apr 21 – Apr 27 | **Subsystem E (Frontend):** Dashboard layout, real-time spot status display | Nyx | Week 2 Backend API |
-| 4 | Apr 28 – May 4 | **Subsystem C:** Servo barrier control via MQTT commands | Yuan Cong | Week 3 MQTT integration |
-| 4 | Apr 28 – May 4 | **Subsystem E:** Reservation logic (reserve, cancel, check-in) in backend + frontend | Nyx + Fahim | Week 3 Frontend + Backend |
-| 5 | May 5 – May 11 | **Integration:** Connect dashboard reservation to ESP32 barrier/LED via MQTT end-to-end | Cheng + All | Week 4 all subsystems |
-| 6 | May 12 – May 18 | **Testing:** End-to-end testing of all scenarios (detect, reserve, cancel, conflict handling); bug fixes | Cheng + All | Week 5 integration |
+| 2 | Apr 14 – Apr 20 | **Subsystem D+E:** Set up Mosquitto on Raspberry Pi; ESP32 ↔ Pi local MQTT publish/subscribe test; connect Pi to HiveMQ Cloud broker | Yuan Cong | Week 1 complete |
+| 2 | Apr 14 – Apr 20 | **Subsystem F (Backend):** Flask project scaffold, database schema, basic REST API; deploy to AWS EC2 | Fahim | Week 1 complete |
+| 3 | Apr 21 – Apr 27 | **Subsystem A+D:** Sensor data published to local MQTT → Pi forwards to cloud → Flask backend receives and stores | Riya + Yuan Cong | Week 2 Subsystem A + D + E |
+| 3 | Apr 21 – Apr 27 | **Subsystem B:** RGB LED control based on sensor state (driven by Pi control logic) | Riya | Week 2 Subsystem A |
+| 3 | Apr 21 – Apr 27 | **Subsystem F (Frontend):** Dashboard layout, real-time spot status display via cloud API | Nyx | Week 2 Backend API |
+| 4 | Apr 28 – May 4 | **Subsystem C:** Servo barrier control via local MQTT commands from Raspberry Pi | Yuan Cong | Week 3 MQTT integration |
+| 4 | Apr 28 – May 4 | **Subsystem F:** Reservation logic (reserve, cancel, check-in) in backend + frontend; cloud MQTT command publishing | Nyx + Fahim | Week 3 Frontend + Backend |
+| 5 | May 5 – May 11 | **Integration:** End-to-end flow across all three tiers: dashboard reservation → cloud MQTT → Pi → ESP32 barrier/LED; and sensor → Pi → cloud → dashboard | Cheng + All | Week 4 all subsystems |
+| 6 | May 12 – May 18 | **Testing:** End-to-end testing of all scenarios (detect, reserve, cancel, conflict handling, cloud disconnection resilience); bug fixes | Cheng + All | Week 5 integration |
 | 7 | May 19 – May 25 | **Physical build:** Assemble scale-model parking lot; mount sensors, LEDs, and servo barriers; final calibration | All members | Week 6 testing |
 | 8 | May 26 – Jun 1 | **Documentation and demo preparation:** Final report, demo script, presentation slides | All members | Week 7 build complete |
 
 **Dependency Summary:**
 
-- Subsystems A, D, and E (Backend) start in parallel in Week 2.
-- Subsystem B depends on Subsystem A (sensor readings drive LED state).
-- Subsystem C depends on Subsystem D (barrier controlled via MQTT commands).
-- Frontend depends on Backend API being ready.
-- Integration (Week 5) requires all subsystems to be individually functional.
+- Subsystems A, D+E (gateway), and F (cloud backend) start in parallel in Week 2.
+- Subsystem B depends on Subsystem A (sensor readings drive LED state) and Subsystem E (Pi relays commands).
+- Subsystem C depends on Subsystem D+E (barrier controlled via MQTT commands from Pi).
+- Frontend depends on Backend API and cloud MQTT being ready.
+- Integration (Week 5) requires all three tiers (cloud, gateway, devices) to be individually functional.
 
 ---
 
 ## 8. Hardware Required
 
-Budget: **$50 AUD** (excluding items available at UWA).
+Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS free tier, HiveMQ Cloud free tier) are used at no cost.
 
 | S.Nr | Item | Description | Available at UWA (Yes/No) | Cost (AUD) | Web Address | Delivery Time |
 |------|------|-------------|--------------------------|------------|-------------|---------------|
 | 1 | ESP32 Development Board (×3) | Duinotech ESP32 Main Board with WiFi and Bluetooth (XC3800). One per parking spot node. | Yes | $0.00 | [Jaycar XC3800](https://www.jaycar.com.au/duinotech-esp32-main-board-with-wi-fi-and-bluetooth/p/XC3800) | — |
-| 2 | Ultrasonic Sensor Module (×3) | HC-SR04 compatible dual ultrasonic distance sensor (XC4442). Range 2–450 cm. One per spot for vehicle detection. | No | $9.95 × 3 = **$29.85** | [Jaycar XC4442](https://www.jaycar.com.au/arduino-compatible-dual-ultrasonic-sensor-module/p/XC4442) | 1–3 business days |
-| 3 | Micro Servo Motor (×2) | 9G Micro Servo Motor (YM2758). Barrier actuation for reserved spots. | No | $11.95 × 2 = **$23.90** | [Jaycar YM2758](https://www.jaycar.com.au/arduino-compatible-9g-micro-servo-motor/p/YM2758) | 1–3 business days |
-| 4 | WS2812 RGB LED Module (×3) | Addressable RGB LED (ZD0272). One per spot for status indication (green/red/yellow). | No | $4.95 × 3 = **$14.85** | [Jaycar ZD0272](https://www.jaycar.com.au/ws2812-rgb-led-module/p/ZD0272) | 1–3 business days |
-| 5 | Breadboard (×3) | 400-point solderless breadboard for prototyping each node. | Yes | $0.00 | [Jaycar PB8820](https://www.jaycar.com.au/arduino-compatible-breadboard-with-400-tie-points/p/PB8820) | — |
-| 6 | Jumper Wires Kit | Male-to-male and male-to-female jumper leads for wiring. | Yes | $0.00 | [Jaycar WC6027](https://www.jaycar.com.au/jumper-lead-mixed-pack-100-pieces/p/WC6027) | — |
-| 7 | USB Micro-B Cables (×3) | For programming and powering ESP32 boards. | Yes | $0.00 | — | — |
-| 8 | 220Ω Resistors (×10) | Current-limiting resistors (if needed for LED wiring). | Yes | $0.00 | — | — |
+| 2 | Raspberry Pi 4 (or 3B+) (×1) | Edge gateway running Mosquitto MQTT broker and control logic service. Requires WiFi and internet connectivity. | Yes | $0.00 | — | — |
+| 3 | Ultrasonic Sensor Module (×3) | HC-SR04 compatible dual ultrasonic distance sensor (XC4442). Range 2–450 cm. One per spot for vehicle detection. | No | $9.95 × 3 = **$29.85** | [Jaycar XC4442](https://www.jaycar.com.au/arduino-compatible-dual-ultrasonic-sensor-module/p/XC4442) | 1–3 business days |
+| 4 | Micro Servo Motor (×3) | 9G Micro Servo Motor (YM2758). One per spot for barrier actuation. | No | $11.95 × 3 = **$35.85** | [Jaycar YM2758](https://www.jaycar.com.au/arduino-compatible-9g-micro-servo-motor/p/YM2758) | 1–3 business days |
+| 5 | WS2812 RGB LED Module (×3) | Addressable RGB LED (ZD0272). One per spot for status indication (green/red/yellow). | No | $4.95 × 3 = **$14.85** | [Jaycar ZD0272](https://www.jaycar.com.au/ws2812-rgb-led-module/p/ZD0272) | 1–3 business days |
+| 6 | Mini Piezo Buzzer (×3) | Mini Piezo Buzzer 3–16 VDC (AB3462). One per spot for audio feedback on barrier raise/lower events. | No | $4.50 × 3 = **$13.50** | [Jaycar AB3462](https://www.jaycar.com.au/mini-piezo-buzzer-3-16vdc/p/AB3462) | 1–3 business days |
+| 7 | Breadboard (×3) | 400-point solderless breadboard for prototyping each node. | Yes | $0.00 | [Jaycar PB8820](https://www.jaycar.com.au/arduino-compatible-breadboard-with-400-tie-points/p/PB8820) | — |
+| 8 | Jumper Wires Kit | Male-to-male and male-to-female jumper leads for wiring. | Yes | $0.00 | [Jaycar WC6027](https://www.jaycar.com.au/jumper-lead-mixed-pack-100-pieces/p/WC6027) | — |
+| 9 | USB Micro-B Cables (×3) | For programming and powering ESP32 boards. | Yes | $0.00 | — | — |
+| 10 | 220Ω Resistors (×10) | Current-limiting resistors (if needed for LED wiring). | Yes | $0.00 | — | — |
+| 11 | MicroSD Card (×1) | For Raspberry Pi OS. 16 GB or larger. | Yes | $0.00 | — | — |
+
+**Cloud Services (No Cost):**
+
+| Service | Purpose | Cost |
+|---------|---------|------|
+| AWS EC2 (free tier) | Host Flask backend and dashboard | $0.00 (12-month free tier) |
+| HiveMQ Cloud (free tier) | Cloud MQTT broker bridging Pi ↔ AWS | $0.00 (free up to 100 connections) |
 
 **Cost Summary:**
 
@@ -258,17 +312,14 @@ Budget: **$50 AUD** (excluding items available at UWA).
 |----------|------|
 | Items available at UWA | $0.00 |
 | Ultrasonic sensors (×3) | $29.85 |
-| Servo motors (×2) | $23.90 |
+| Servo motors (×3) | $35.85 |
 | RGB LED modules (×3) | $14.85 |
-| **Total to purchase** | **$68.60** |
+| Piezo buzzers (×3) | $13.50 |
+| Cloud services | $0.00 |
+| **Total to purchase** | **$94.05** |
+| **Remaining budget** | **$5.95** |
 
-> **Note:** Total exceeds the $50 budget by $18.60. To stay within budget, we propose the following options (to be confirmed with Lab Technician Andy Burrell at <andrew.burrell@uwa.edu.au>):
->
-> - Check if ultrasonic sensors or servo motors are available at UWA — if 1 ultrasonic sensor is available, this saves $9.95.
-> - Reduce the demo to 2 spots instead of 3 (saving one sensor + one LED = $14.90), bringing the total to **$53.70**.
-> - Use individual coloured LEDs (red, green, yellow) instead of WS2812 RGB modules — basic LEDs are typically available at UWA, saving $14.85 and bringing the total to **$53.75** (or within budget with 2-spot reduction).
->
-> We will finalise the hardware list after consulting Andy.
+> All items are sourced from Jaycar with 1–3 business day delivery. We will confirm availability of UWA-provided items (ESP32 boards, Raspberry Pi, breadboards, jumper wires) with Lab Technician Andy Burrell (andrew.burrell@uwa.edu.au) before ordering.
 
 ---
 
