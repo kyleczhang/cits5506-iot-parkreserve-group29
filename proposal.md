@@ -27,8 +27,8 @@
 **Problem:**
 
 - In urban parking facilities, drivers spend an average of 15–20 minutes searching for available spots, contributing to traffic congestion, wasted fuel, and driver frustration [1].
-- Existing parking lots typically lack real-time occupancy visibility — drivers must physically inspect each spot, which is inefficient and time-consuming.
-- Even where real-time availability data exists, most systems do not support reservation — a driver may see a spot marked "available" on a dashboard but find it taken upon arrival.
+- Existing parking lots typically lack real-time occupancy visibility. Drivers must physically inspect each spot, which is inefficient and time-consuming.
+- Even where real-time availability data exists, most systems do not support reservation. A driver may see a spot marked "available" on a dashboard but find it taken upon arrival.
 - Without physical enforcement (e.g., barriers), reserved spots are frequently occupied by unauthorized vehicles, making reservations unreliable.
 
 **Benefits of the Solution:**
@@ -40,9 +40,9 @@
 
 **Expected Impact:**
 
-- Reduced traffic congestion and fuel consumption in parking areas — studies estimate that 30% of urban traffic is caused by parking searches [2].
+- Reduced traffic congestion and fuel consumption in parking areas. Studies estimate that 30% of urban traffic is caused by parking searches [2].
 - Improved user satisfaction through a seamless reserve-and-park workflow.
-- Demonstrates a practical, scalable three-tier IoT architecture (cloud backend, edge gateway, device layer) integrating sensing, actuation, wireless communication, and web-based user interaction — applicable to university campuses, shopping centres, and hospital facilities.
+- Demonstrates a practical, scalable three-tier IoT architecture (cloud backend, edge gateway, device layer) integrating sensing, actuation, wireless communication, and web-based user interaction. This architecture is applicable to university campuses, shopping centres, and hospital facilities.
 - Remote access via a cloud-hosted dashboard means users can reserve a spot from anywhere with internet access, not just within the parking facility's local network.
 
 ---
@@ -53,7 +53,7 @@ Several IoT-based smart parking systems have been proposed in the literature. We
 
 **1. Sensor-Based Occupancy Detection Systems**
 
-Khanna and Anand [1] proposed an IoT-based smart parking system using ultrasonic sensors connected to a Raspberry Pi, with data transmitted to a cloud server and displayed on a mobile app. **Strength:** Demonstrated real-time occupancy detection with reasonable accuracy. **Gap:** The system only monitors occupancy — it does not support reservations or provide any physical enforcement mechanism, so a "free" spot may be taken before a driver arrives.
+Khanna and Anand [1] proposed an IoT-based smart parking system using ultrasonic sensors connected to a Raspberry Pi, with data transmitted to a cloud server and displayed on a mobile app. **Strength:** Demonstrated real-time occupancy detection with reasonable accuracy. **Gap:** The system only monitors occupancy and does not support reservations or provide any physical enforcement mechanism, so a "free" spot may be taken before a driver arrives.
 
 **2. IoT Smart Parking with Cloud Integration**
 
@@ -63,9 +63,9 @@ Mainetti et al. [3] developed an IoT-aware smart parking system using RFID and Z
 
 Amato et al. [4] used deep learning-based image classification to detect parking occupancy from overhead cameras. **Strength:** Does not require per-spot sensors, reducing hardware deployment cost at scale. **Gap:** Requires significant computational resources for image processing, is sensitive to lighting and weather conditions, and does not support reservation or physical actuation.
 
-**4. Commercial Products — ParkAssist and Guidance Systems**
+**4. Commercial Products: ParkAssist and Guidance Systems**
 
-Commercial parking guidance systems such as ParkAssist use overhead sensors and LED indicators to guide drivers to available spots in multi-storey car parks [5]. **Strength:** Deployed at scale in airports and shopping centres with proven reliability. **Gap:** These are proprietary, high-cost systems designed for large operators — not accessible for small-to-medium facilities. They provide guidance only, without reservation or barrier control.
+Commercial parking guidance systems such as ParkAssist use overhead sensors and LED indicators to guide drivers to available spots in multi-storey car parks [5]. **Strength:** Deployed at scale in airports and shopping centres with proven reliability. **Gap:** These are proprietary, high-cost systems designed for large operators and not accessible for small-to-medium facilities. They provide guidance only, without reservation or barrier control.
 
 **5. MQTT-Based IoT Communication**
 
@@ -95,9 +95,9 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 1. **Sensor Integration:** Mount ultrasonic distance sensors (HC-SR04) at each parking spot to continuously measure the distance to the ground. A vehicle presence is detected when the measured distance drops below a calibrated threshold.
 
 2. **Status Indication:** Each spot has an RGB LED module that displays:
-   - **Green** — spot is available
-   - **Red** — spot is occupied (vehicle detected)
-   - **Yellow** — spot is reserved via the web dashboard
+   - **Green**: spot is available
+   - **Red**: spot is occupied (vehicle detected)
+   - **Yellow**: spot is reserved via the web dashboard
 
 3. **Barrier Actuation and Audio Feedback:** A servo motor at each spot controls a miniature barrier arm, and a piezo buzzer provides audio confirmation. When a reservation is made, the barrier rises (servo rotates to blocking position) with a confirmation tone. When the reserved user arrives and checks in via the dashboard, the barrier lowers with a distinct tone.
 
@@ -115,7 +115,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 7. **Web Dashboard:** A browser-based interface accessible remotely where users can:
    - View real-time occupancy status of all spots (colour-coded map).
-   - Reserve an available spot — command flows from cloud → Raspberry Pi → ESP32 (LED turns yellow, barrier rises).
+   - Reserve an available spot: command flows from cloud → Raspberry Pi → ESP32 (LED turns yellow, barrier rises).
    - Cancel a reservation (barrier lowers, LED returns to green).
 
 8. **System Integration and Testing:** Connect all three tiers, test end-to-end flows (detection → local control → cloud sync → remote reservation → barrier actuation), and calibrate sensor thresholds.
@@ -206,29 +206,29 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 - **Hardware:** SG90 micro servo motor and mini piezo buzzer per spot. Servo arm acts as a miniature barrier gate; buzzer provides audio feedback.
 - **Software:** On receiving a `reserve` command via local MQTT (from Raspberry Pi), the ESP32 rotates the servo to 90° (barrier up) and sounds a short confirmation tone. On `cancel` or `check-in`, it rotates to 0° (barrier down) with a distinct tone. The buzzer also alerts on conflict events (e.g., vehicle detected at a reserved spot).
-- **Interdependence:** Triggered by Subsystem D (commands originating from cloud, relayed by Raspberry Pi). Must coordinate with Subsystem A — if a vehicle is detected while barrier is up, alert the gateway of a conflict.
+- **Interdependence:** Triggered by Subsystem D (commands originating from cloud, relayed by Raspberry Pi). Must coordinate with Subsystem A: if a vehicle is detected while barrier is up, alert the gateway of a conflict.
 
 #### Subsystem D: Communication Layer (Software)
 
 - **Local MQTT (ESP32 ↔ Raspberry Pi):** Each ESP32 connects to the Mosquitto broker running on the Raspberry Pi over local WiFi.
-    - `spot/<id>/status` — published by ESP32 (sensor data uplink)
-    - `spot/<id>/command` — published by Raspberry Pi control service (actuator commands downlink)
+    - `spot/<id>/status`: published by ESP32 (sensor data uplink)
+    - `spot/<id>/command`: published by Raspberry Pi control service (actuator commands downlink)
 - **Cloud MQTT (Raspberry Pi ↔ AWS):** The Raspberry Pi's control service connects to a cloud MQTT broker (HiveMQ Cloud free tier) over TLS-encrypted internet connection.
-    - `cloud/spot/<id>/status` — forwarded by Pi to cloud (status uplink)
-    - `cloud/spot/<id>/command` — published by Flask backend (reservation commands downlink)
+    - `cloud/spot/<id>/status`: forwarded by Pi to cloud (status uplink)
+    - `cloud/spot/<id>/command`: published by Flask backend (reservation commands downlink)
 - **QoS:** Level 1 (at least once delivery) on both local and cloud MQTT to ensure commands are not lost.
 - **Interdependence:** Bridges Subsystems A/B/C (ESP32 devices) with Subsystem F (cloud backend) through Subsystem E (Raspberry Pi gateway).
 
-#### Subsystem E: Edge Gateway (Raspberry Pi — Hardware + Software)
+#### Subsystem E: Edge Gateway (Raspberry Pi, Hardware + Software)
 
 - **Hardware:** Raspberry Pi 4 (or 3B+) connected to the same local WiFi network as ESP32 nodes, and to the internet.
 - **Software:** Runs two services:
-    1. **Mosquitto MQTT broker** — handles all local ESP32 communication.
-    2. **Control logic service (Python)** — subscribes to local `spot/+/status` topics, processes sensor data, publishes LED/barrier commands to local `spot/<id>/command` topics, and bridges messages to/from the cloud MQTT broker.
+    1. **Mosquitto MQTT broker**: handles all local ESP32 communication.
+    2. **Control logic service (Python)**: subscribes to local `spot/+/status` topics, processes sensor data, publishes LED/barrier commands to local `spot/<id>/command` topics, and bridges messages to/from the cloud MQTT broker.
 - **Key benefit:** Local control loop (sensor → LED/barrier) operates with low latency on the LAN (~milliseconds). If the cloud connection drops, the Pi continues to manage spot detection and LED updates locally; reservations queue until connectivity resumes.
 - **Interdependence:** Acts as the central bridge between the device layer (Subsystems A/B/C) and the cloud layer (Subsystem F).
 
-#### Subsystem F: Cloud Backend and Dashboard (Software — AWS)
+#### Subsystem F: Cloud Backend and Dashboard (Software, AWS)
 
 - **Backend:** Python Flask application deployed on AWS (EC2 or Elastic Beanstalk). Connects to the cloud MQTT broker via the `paho-mqtt` library. Receives spot status updates, manages reservation business logic, and exposes REST API endpoints.
 - **Frontend:** HTML/CSS/JavaScript dashboard served by Flask over a public URL. Displays a colour-coded parking map with real-time updates (via periodic polling or WebSocket). Users can view availability and reserve/cancel spots from anywhere with internet access.
