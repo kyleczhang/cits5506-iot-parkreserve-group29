@@ -271,13 +271,91 @@ The project spans **8 weeks** from proposal approval to final demonstration. Tas
 | 7 | May 19 – May 25 | **Physical build:** Assemble scale-model parking lot; mount sensors, LEDs, and servo barriers; final calibration | All members | Week 6 testing |
 | 8 | May 26 – Jun 1 | **Documentation and demo preparation:** Final report, demo script, presentation slides | All members | Week 7 build complete |
 
-**Dependency Summary:**
+### 7.1 Gantt Chart
+
+```
+Task / Sub-Team               Wk1     Wk2     Wk3     Wk4     Wk5     Wk6     Wk7     Wk8
+                              Apr7    Apr14   Apr21   Apr28   May5    May12   May19   May26
+─────────────────────────────────────────────────────────────────────────────────────────────
+Environment Setup (All)       ██████
+                                    ▲ M1
+Sensor (A) — Riya                     ██████  ───────
+LED (B) — Riya                                ██████
+MQTT + Gateway (D+E) — Yuan           ██████  ██████
+Barrier + Buzzer (C) — Yuan                           ██████
+                                                      ▲ M2
+Backend (F) — Fahim                   ██████  ──────  ██████
+Frontend (F) — Nyx                            ██████  ██████
+                                                              ▲ M3
+Integration — Cheng + All                                     ██████
+Evaluation & Testing — All                                            ██████
+                                                                      ▲ M4
+Physical Build — All                                                          ██████
+                                                                              ▲ M5
+Docs & Demo Prep — All                                                                ██████
+                                                                                      ▲ M6
+─────────────────────────────────────────────────────────────────────────────────────────────
+██████ = active work    ─────── = ongoing/support    ▲ = milestone
+```
+
+### 7.2 Milestones
+
+| Milestone | Week | Date | Deliverable |
+|-----------|------|------|-------------|
+| **M1:** Environment Ready | 1 | Apr 13 | All tools installed; ESP32 connects to WiFi; AWS and HiveMQ accounts created |
+| **M2:** Subsystems Individually Working | 4 | May 4 | Sensor detects vehicles; LEDs change colour; barrier raises/lowers; dashboard shows spots; reservation API functional |
+| **M3:** End-to-End Integration Complete | 5 | May 11 | Full data flow works: sensor → Pi → cloud → dashboard; reservation → Pi → ESP32 barrier/LED |
+| **M4:** Evaluation & Testing Passed | 6 | May 18 | All metrics meet target thresholds (see Section 7.3); bugs fixed |
+| **M5:** Physical Demo Ready | 7 | May 25 | Scale-model parking lot assembled with all hardware mounted and calibrated |
+| **M6:** Final Submission | 8 | Jun 1 | Report, demo video, presentation slides completed |
+
+### 7.3 Evaluation and Testing Plan
+
+Dedicated testing is scheduled in **Week 6**, with specific metrics and target thresholds:
+
+**Sensor Accuracy and Reliability (Subsystem A):**
+
+| Metric | Definition | Target | Test Method |
+|--------|-----------|--------|-------------|
+| **Detection Accuracy** | % of correct occupied/available classifications over N trials | ≥ 95% | Place/remove a scale-model vehicle 50 times; record sensor output vs ground truth |
+| **False Alarm Rate (False Positive)** | % of times sensor reports "occupied" when spot is actually empty | ≤ 3% | Run sensor for 30 min on empty spot; count false "occupied" readings |
+| **Missed Detection Rate (False Negative)** | % of times sensor reports "available" when a vehicle is present | ≤ 2% | Place vehicle in spot for 30 min; count false "available" readings |
+| **Detection Latency** | Time from vehicle arrival/departure to correct status update on ESP32 | < 3 seconds | Timestamp sensor trigger vs status change over 20 trials |
+
+**Actuator Reliability (Subsystems B + C):**
+
+| Metric | Definition | Target | Test Method |
+|--------|-----------|--------|-------------|
+| **LED Correctness** | LED displays correct colour for current spot state | 100% | Verify LED colour across all state transitions (available → reserved → occupied → available) × 20 cycles |
+| **Barrier Actuation Success** | Servo moves to correct position on command | 100% | Send reserve/cancel commands 30 times; verify barrier position |
+| **Buzzer Feedback** | Correct tone plays on barrier raise/lower events | 100% | Verify audio on each barrier actuation during above test |
+
+**Communication and End-to-End (Subsystems D + E + F):**
+
+| Metric | Definition | Target | Test Method |
+|--------|-----------|--------|-------------|
+| **MQTT Message Delivery Rate** | % of messages successfully delivered (local + cloud) | ≥ 99% | Log published vs received messages over 200 message exchanges |
+| **End-to-End Latency** | Time from user reservation click to barrier raising | < 5 seconds | Timestamp reservation request on dashboard vs barrier movement; repeat 20 times |
+| **Cloud Disconnection Resilience** | Local control (sensor → LED) continues during cloud outage | Pass/Fail | Disconnect Pi from internet; verify local sensor → LED still works; reconnect and verify cloud re-sync |
+| **Dashboard Accuracy** | Dashboard spot status matches physical spot state | 100% | Compare dashboard display vs physical LED colours across all 3 spots over 10 state changes |
+
+**Reservation Logic (Subsystem F):**
+
+| Metric | Definition | Target | Test Method |
+|--------|-----------|--------|-------------|
+| **Reservation Correctness** | Reserve, cancel, and check-in operations produce correct state transitions | 100% | Execute each operation 10 times; verify database state, LED colour, and barrier position |
+| **Conflict Handling** | System correctly detects and alerts when an unreserved vehicle occupies a reserved spot | 100% | Place vehicle at reserved spot 10 times; verify conflict alert is generated |
+
+> **Note:** If any metric falls below its target, the team will diagnose the root cause, adjust sensor thresholds or firmware logic, and re-test. Results will be documented in the final report.
+
+### 7.4 Dependency Summary
 
 - Subsystems A, D+E (gateway), and F (cloud backend) start in parallel in Week 2.
 - Subsystem B depends on Subsystem A (sensor readings drive LED state) and Subsystem E (Pi relays commands).
 - Subsystem C depends on Subsystem D+E (barrier controlled via MQTT commands from Pi).
 - Frontend depends on Backend API and cloud MQTT being ready.
 - Integration (Week 5) requires all three tiers (cloud, gateway, devices) to be individually functional.
+- Evaluation & Testing (Week 6) requires integration to be complete; results feed back into Week 7 physical build adjustments.
 
 ---
 
