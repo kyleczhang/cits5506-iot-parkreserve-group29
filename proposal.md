@@ -35,7 +35,7 @@
 
 - Real-time occupancy detection using IoT sensors eliminates the need for drivers to manually search, reducing average parking search time significantly.
 - A web-based reservation system allows users to secure a spot before arrival, improving convenience and predictability.
-- Colour-coded LED indicators (green = available, red = occupied, yellow = reserved) provide immediate, at-a-glance status visible from a distance.
+- LED indicators (green = available, red = occupied, yellow = reserved) provide immediate, at-a-glance status visible from a distance.
 - Automated barriers physically enforce reservations, preventing unauthorized occupation of reserved spots.
 
 **Expected Impact:**
@@ -53,19 +53,31 @@ Several IoT-based smart parking systems have been proposed in the literature. We
 
 **1. Sensor-Based Occupancy Detection Systems**
 
-Khanna and Anand [1] proposed an IoT-based smart parking system using ultrasonic sensors connected to a Raspberry Pi, with data transmitted to a cloud server and displayed on a mobile app. **Strength:** Demonstrated real-time occupancy detection with reasonable accuracy. **Gap:** The system only monitors occupancy and does not support reservations or provide any physical enforcement mechanism, so a "free" spot may be taken before a driver arrives.
+Khanna and Anand [1] proposed an IoT-based smart parking system using ultrasonic sensors connected to a Raspberry Pi, with data transmitted to a cloud server and displayed on a mobile app.
+
+- **Strength:** Demonstrated real-time occupancy detection with reasonable accuracy.
+- **Gap:** The system only monitors occupancy and does not support reservations or provide any physical enforcement mechanism, so a free spot may be taken before a driver arrives.
 
 **2. IoT Smart Parking with Cloud Integration**
 
-Mainetti et al. [3] developed an IoT-aware smart parking system using RFID and ZigBee sensor networks with a cloud-based backend. **Strength:** Comprehensive architecture integrating heterogeneous sensor networks with scalable cloud storage and analytics. **Gap:** Relies on RFID for vehicle identification, requiring each vehicle to carry a tag, which limits adoption. No barrier-based reservation enforcement is included.
+Mainetti et al. [3] developed an IoT-aware smart parking system using RFID and ZigBee sensor networks with a cloud-based backend.
+
+- **Strength:** Comprehensive architecture integrating heterogeneous sensor networks with scalable cloud storage and analytics.
+- **Gap:** Relies on RFID for vehicle identification, requiring each vehicle to carry a tag, which limits adoption. No barrier-based reservation enforcement is included.
 
 **3. Computer Vision Approaches**
 
-Amato et al. [4] used deep learning-based image classification to detect parking occupancy from overhead cameras. **Strength:** Does not require per-spot sensors, reducing hardware deployment cost at scale. **Gap:** Requires significant computational resources for image processing, is sensitive to lighting and weather conditions, and does not support reservation or physical actuation.
+Amato et al. [4] used deep learning-based image classification to detect parking occupancy from overhead cameras.
+
+- **Strength:** Does not require per-spot sensors, reducing hardware deployment cost at scale.
+- **Gap:** Requires significant computational resources for image processing, is sensitive to lighting and weather conditions, and does not support reservation or physical actuation.
 
 **4. Commercial Products: ParkAssist and Guidance Systems**
 
-Commercial parking guidance systems such as ParkAssist use overhead sensors and LED indicators to guide drivers to available spots in multi-storey car parks [5]. **Strength:** Deployed at scale in airports and shopping centres with proven reliability. **Gap:** These are proprietary, high-cost systems designed for large operators and not accessible for small-to-medium facilities. They provide guidance only, without reservation or barrier control.
+Commercial parking guidance systems such as ParkAssist use overhead sensors and LED indicators to guide drivers to available spots in multi-storey car parks [5].
+
+- **Strength:** Deployed at scale in airports and shopping centres with proven reliability.
+- **Gap:** These are proprietary, high-cost systems designed for large operators and not accessible for small-to-medium facilities. They provide guidance only, without reservation or barrier control.
 
 **5. MQTT-Based IoT Communication**
 
@@ -88,7 +100,7 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 ## 5. Methodology and System Design
 
-### 5.1 Design Approach (Step-by-Step)
+### 5.1 Design Approach
 
 The system uses a **three-tier architecture**: a cloud-hosted backend for business logic and user access, a Raspberry Pi edge gateway for local device control, and ESP32 sensor/actuator nodes at each parking spot.
 
@@ -390,7 +402,7 @@ Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS fre
 | **Total to purchase** | **$80.55** |
 | **Remaining budget** | **$19.45** |
 
-> All items are sourced from Jaycar with 1–3 business day delivery. We will confirm availability of UWA-provided items (ESP32 boards, Raspberry Pi, breadboards, jumper wires) with Lab Technician Andy Burrell (andrew.burrell@uwa.edu.au) before ordering.
+> All items are sourced from Jaycar with 1–3 business day delivery. We will confirm availability of UWA-provided items (ESP32 boards, Raspberry Pi, breadboards, jumper wires) with Lab Technician Andy Burrell (<andrew.burrell@uwa.edu.au>) before ordering.
 
 ---
 
