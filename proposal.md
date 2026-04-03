@@ -114,7 +114,7 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 The system uses a **three-tier architecture**: a cloud-hosted backend for business logic and user access, a Raspberry Pi edge gateway for local device control, and ESP32 sensor/actuator nodes at each parking spot.
 
-1. **Sensor Integration:** Mount ultrasonic distance sensors (HC-SR04) at each parking spot to continuously measure the distance to the ground. A vehicle presence is detected when the measured distance drops below a calibrated threshold.
+1. **Sensor Integration:** Mount ultrasonic distance sensors (RCWL-1601) at each parking spot to continuously measure the distance to the ground. A vehicle presence is detected when the measured distance drops below a calibrated threshold.
 
 2. **Status Indication:** Each spot has an RGB LED module that displays:
    - **Green**: spot is available
@@ -207,13 +207,13 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 #### Subsystem A: Sensing Unit (Hardware + Firmware)
 
-- **Hardware:** HC-SR04 ultrasonic sensor per spot, connected to ESP32 GPIO pins (trigger + echo).
+- **Hardware:** RCWL-1601 ultrasonic distance sensor per spot (3–5V compatible), connected to ESP32 GPIO pins (trigger + echo).
 - **Software:** Arduino C++ firmware on ESP32. Periodically triggers ultrasonic pulse, measures echo time, calculates distance. If distance < threshold (e.g., 15 cm for a scale model), spot is occupied.
 - **Output:** Publishes `occupied` or `available` status to the local MQTT broker (on Raspberry Pi) every 2 seconds.
 
 #### Subsystem B: Indicator Unit (Hardware + Firmware)
 
-- **Hardware:** WS2812 RGB LED module per spot, driven by a single data pin on the ESP32.
+- **Hardware:** Three individual 5mm LEDs (red, green, yellow) per spot, each driven through a 220Ω current-limiting resistor from an ESP32 GPIO pin.
 - **Software:** LED color is set based on the current spot state held in the ESP32's local state machine:
     - `available` → green
     - `occupied` → red
@@ -222,7 +222,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 #### Subsystem C: Barrier Unit (Hardware + Firmware)
 
-- **Hardware:** SG90 micro servo motor per spot. Servo arm acts as a miniature barrier gate.
+- **Hardware:** Feetech FS90 9g micro servo motor per spot. Servo arm acts as a miniature barrier gate.
 - **Software:** On receiving a `reserve` command via local MQTT (from Raspberry Pi), the ESP32 rotates the servo to 90° (barrier up). On `cancel` or `check-in`, it rotates to 0° (barrier down).
 - **Interdependence:** Triggered by Subsystem D (commands originating from cloud, relayed by Raspberry Pi). Must coordinate with Subsystem A: if a vehicle is detected while barrier is up, alert the gateway of a conflict.
 
@@ -382,16 +382,16 @@ Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS fre
 
 | S.Nr | Item | Description | Available at UWA (Yes/No) | Cost (AUD) | Web Address | Delivery Time |
 |------|------|-------------|--------------------------|------------|-------------|---------------|
-| 1 | ESP32 Development Board (×3) | Duinotech ESP32 Main Board with WiFi and Bluetooth (XC3800). One per parking spot node. | Yes | $0.00 | [Jaycar XC3800](https://www.jaycar.com.au/duinotech-esp32-main-board-with-wi-fi-and-bluetooth/p/XC3800) | — |
-| 2 | Raspberry Pi 4 (or 3B+) (×1) | Edge gateway running Mosquitto MQTT broker and control logic service. Requires WiFi and internet connectivity. | Yes | $0.00 | — | — |
-| 3 | Ultrasonic Sensor Module (×3) | HC-SR04 compatible dual ultrasonic distance sensor (XC4442). Range 2–450 cm. One per spot for vehicle detection. | No | $9.95 × 3 = **$29.85** | [Jaycar XC4442](https://www.jaycar.com.au/arduino-compatible-dual-ultrasonic-sensor-module/p/XC4442) | 1–3 business days |
-| 4 | Micro Servo Motor (×3) | 9G Micro Servo Motor (YM2758). One per spot for barrier actuation. | No | $11.95 × 3 = **$35.85** | [Jaycar YM2758](https://www.jaycar.com.au/arduino-compatible-9g-micro-servo-motor/p/YM2758) | 1–3 business days |
-| 5 | WS2812 RGB LED Module (×3) | Addressable RGB LED (ZD0272). One per spot for status indication (green/red/yellow). | No | $4.95 × 3 = **$14.85** | [Jaycar ZD0272](https://www.jaycar.com.au/ws2812-rgb-led-module/p/ZD0272) | 1–3 business days |
-| 7 | Breadboard (×3) | 400-point solderless breadboard for prototyping each node. | Yes | $0.00 | [Jaycar PB8820](https://www.jaycar.com.au/arduino-compatible-breadboard-with-400-tie-points/p/PB8820) | — |
-| 8 | Jumper Wires Kit | Male-to-male and male-to-female jumper leads for wiring. | Yes | $0.00 | [Jaycar WC6027](https://www.jaycar.com.au/jumper-lead-mixed-pack-100-pieces/p/WC6027) | — |
-| 9 | USB Micro-B Cables (×3) | For programming and powering ESP32 boards. | Yes | $0.00 | — | — |
-| 10 | 220Ω Resistors (×10) | Current-limiting resistors (if needed for LED wiring). | Yes | $0.00 | — | — |
-| 11 | MicroSD Card (×1) | For Raspberry Pi OS. 16 GB or larger. | Yes | $0.00 | — | — |
+| 1 | ESP32 Development Board (×3) | FireBeetle Board ESP32-E (Arduino Compatible). One per parking spot node. Lab stocks 37 units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/firebeetle-board-esp32-e-arduino-compatible.html) | — |
+| 2 | Raspberry Pi 3B+ (×1) | Edge gateway running Mosquitto MQTT broker and control logic service. Requires WiFi and internet connectivity. Lab stocks 33 units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/raspberry-pi-3-model-b-plus.html) | — |
+| 3 | Ultrasonic Sensor Module (×3) | RCWL-1601 Ultrasonic Distance Sensor (3–5V). Range 2–450 cm. One per spot for vehicle detection. Lab stocks 39 units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/33v-ultrasonic-distance-sensor.html) | — |
+| 4 | Micro Servo Motor (×3) | Feetech FS90 9g Micro Servo (180°, 1.5 kg/cm). One per spot for barrier actuation. Lab stocks 15+ units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/feetech-fs90-1-5kgcm-micro-servo-9g.html) | — |
+| 5 | 5mm LEDs — Red, Green, Yellow (×3 sets) | Individual 5mm LEDs (one red, one green, one yellow per spot) for status indication. Lab stocks 20+ of each colour. | Yes | $0.00 | — | — |
+| 6 | Breadboard (×3) | 830-point solderless breadboard for prototyping each node. Lab stocks 27 units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/solderless-breadboard-830-tie-point-zy-102.html) | — |
+| 7 | Jumper Wires Kit | Male-to-male and male-to-female jumper leads for wiring. Multiple types available in lab. | Yes | $0.00 | — | — |
+| 8 | USB Micro-B Cables (×3) | For programming and powering ESP32 boards. Lab stocks 48 units. | Yes | $0.00 | [Core Electronics](https://core-electronics.com.au/usb-cable-type-a-to-micro-b-1m.html) | — |
+| 9 | 220Ω Resistors (×9) | Current-limiting resistors for LED wiring (one per LED, 3 LEDs × 3 spots). | Yes | $0.00 | — | — |
+| 10 | MicroSD Card (×1) | For Raspberry Pi OS. 16 GB or larger. | Yes | $0.00 | — | — |
 
 **Cloud Services (No Cost):**
 
@@ -404,15 +404,12 @@ Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS fre
 
 | Category | Cost |
 |----------|------|
-| Items available at UWA | $0.00 |
-| Ultrasonic sensors (×3) | $29.85 |
-| Servo motors (×3) | $35.85 |
-| RGB LED modules (×3) | $14.85 |
+| All hardware (sourced from UWA lab) | $0.00 |
 | Cloud services | $0.00 |
-| **Total to purchase** | **$80.55** |
-| **Remaining budget** | **$19.45** |
+| **Total to purchase** | **$0.00** |
+| **Remaining budget** | **$100.00** |
 
-> All items are sourced from Jaycar with 1–3 business day delivery. We will confirm availability of UWA-provided items (ESP32 boards, Raspberry Pi, breadboards, jumper wires) with Lab Technician Andy Burrell (<andrew.burrell@uwa.edu.au>) before ordering.
+> All hardware items are available from the UWA lab. We will confirm borrowing/allocation of all items with Lab Technician Andy Burrell (<andrew.burrell@uwa.edu.au>) before the project begins.
 
 ---
 
