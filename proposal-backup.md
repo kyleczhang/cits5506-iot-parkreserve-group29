@@ -8,7 +8,7 @@
 
 ---
 
-## 2. Team Members
+## 2. Group Number, Names and Student Numbers of Team Members
 
 | Name | Student Number |
 |------|---------------|
@@ -22,7 +22,7 @@
 
 ---
 
-## 3. Problem, Benefits, and Impact
+## 3. Why Do You Want to Do This Project? What Is the Problem? What Is the Benefit of Its Solution? What Is the Impact of the Solution?
 
 **Problem:**
 
@@ -46,7 +46,7 @@
 
 ---
 
-## 4. Literature Review
+## 4. What Are the Existing Solutions? (Literature Review)
 
 Several IoT-based smart parking systems have been proposed in the literature. We review key works below and identify their strengths and gaps relative to our project.
 
@@ -85,7 +85,7 @@ Our project uniquely combines real-time sensing, web-based reservation, LED visu
 
 ---
 
-## 5. Methodology and System Design
+## 5. How Will You Do It? Methodology and System Design
 
 ### 5.1 Design Approach (Step-by-Step)
 
