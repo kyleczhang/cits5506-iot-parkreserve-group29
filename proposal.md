@@ -1,5 +1,15 @@
 # Project Proposal CITS5506: Internet of Things
 
+**Unit:** CITS5506 The Internet of Things | **Semester:** 1, 2026 | **Group:** 29
+
+| Name | Student Number |
+|------|---------------|
+| Nyx Chen | 24290498 |
+| Fahim Abrar | 24435912 |
+| Riya Sakhiya | 24601375 |
+| Yuan Cong Yuan | 25003723 |
+| Cheng Zhang | 24878502 |
+
 ---
 
 ## 1. Name of Project
@@ -120,13 +130,13 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
    - A control logic service (Python) that processes sensor data from ESP32 nodes, drives LED/barrier commands locally, and bridges data to/from the cloud backend via a cloud MQTT broker (HiveMQ Cloud).
    - This ensures low-latency local control (sensor → LED/barrier response stays on the LAN) and continued operation even if the cloud connection is temporarily interrupted.
 
-6. **Cloud Backend (AWS):** A Flask (Python) web application deployed on AWS (EC2 or Elastic Beanstalk) that:
+6. **Cloud Backend (AWS):** A Flask (Python) web application deployed on AWS EC2 that:
    - Connects to the cloud MQTT broker to receive spot status updates forwarded by the Raspberry Pi and to publish reservation commands.
-   - Manages reservation business logic and persists state in a PostgreSQL (or SQLite) database.
+   - Manages reservation business logic and persists state in a PostgreSQL database.
    - Serves the web dashboard over a public URL, accessible from anywhere with internet access.
 
-7. **Web Dashboard:** A browser-based interface accessible remotely where users can:
-   - View real-time occupancy status of all spots (colour-coded map).
+7. **Web Dashboard:** A React.js application accessible remotely where users can:
+   - View real-time occupancy status of all spots (color-coded map), with live updates via WebSocket or polling.
    - Reserve an available spot: command flows from cloud → Raspberry Pi → ESP32 (LED turns yellow, barrier rises).
    - Cancel a reservation (barrier lowers, LED returns to green).
 
@@ -140,7 +150,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 ║                                                                       ║
 ║  ┌────────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ║
 ║  │  Web Dashboard     │  │  Flask Backend    │  │  PostgreSQL /    │  ║
-║  │  (HTML/CSS/JS)     │◄─┤  (Business Logic, │──┤  SQLite Database │  ║
+║  │  (React.js SPA)    │◄─┤  (Business Logic, │──┤  SQLite Database │  ║
 ║  │  Public URL        │  │   REST API)       │  │  (Reservations)  │  ║
 ║  └────────────────────┘  └────────┬─────────┘  └──────────────────┘  ║
 ║                                   │                                    ║
@@ -204,7 +214,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 #### Subsystem B: Indicator Unit (Hardware + Firmware)
 
 - **Hardware:** WS2812 RGB LED module per spot, driven by a single data pin on the ESP32.
-- **Software:** LED colour is set based on the current spot state held in the ESP32's local state machine:
+- **Software:** LED color is set based on the current spot state held in the ESP32's local state machine:
     - `available` → green
     - `occupied` → red
     - `reserved` → yellow
@@ -221,7 +231,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 - **Local MQTT (ESP32 ↔ Raspberry Pi):** Each ESP32 connects to the Mosquitto broker running on the Raspberry Pi over local WiFi.
     - `spot/<id>/status`: published by ESP32 (sensor data uplink)
     - `spot/<id>/command`: published by Raspberry Pi control service (actuator commands downlink)
-- **Cloud MQTT (Raspberry Pi ↔ AWS):** The Raspberry Pi's control service connects to a cloud MQTT broker (HiveMQ Cloud free tier) over TLS-encrypted internet connection.
+- **Cloud MQTT (Raspberry Pi ↔ AWS):** The Raspberry Pi's control service connects to a cloud MQTT broker (HiveMQ Cloud) over TLS-encrypted internet connection.
     - `cloud/spot/<id>/status`: forwarded by Pi to cloud (status uplink)
     - `cloud/spot/<id>/command`: published by Flask backend (reservation commands downlink)
 - **QoS:** Level 1 (at least once delivery) on both local and cloud MQTT to ensure commands are not lost.
@@ -238,22 +248,22 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 #### Subsystem F: Cloud Backend and Dashboard (Software, AWS)
 
-- **Backend:** Python Flask application deployed on AWS (EC2 or Elastic Beanstalk). Connects to the cloud MQTT broker via the `paho-mqtt` library. Receives spot status updates, manages reservation business logic, and exposes REST API endpoints.
-- **Frontend:** HTML/CSS/JavaScript dashboard served by Flask over a public URL. Displays a colour-coded parking map with real-time updates (via periodic polling or WebSocket). Users can view availability and reserve/cancel spots from anywhere with internet access.
+- **Backend:** Python Flask application deployed on AWS EC2. Connects to the cloud MQTT broker via the `paho-mqtt` library. Receives spot status updates, manages reservation business logic, and exposes REST API endpoints.
+- **Frontend:** React.js dashboard. Displays a color-coded parking map with real-time updates (via WebSocket or periodic polling). Users can view availability and reserve/cancel spots from anywhere with internet access.
 - **Database:** PostgreSQL (AWS RDS) or SQLite stores spot states, reservation records (user, spot, timestamp, status).
 - **Interdependence:** Depends on Subsystem D (cloud MQTT) for real-time sensor data from the Raspberry Pi. Sends reservation commands back through Subsystem D → Subsystem E → ESP32 nodes.
 
 ---
 
-## 6. Distribution of Work Among Team Members
+## 6. Distribution of Work
 
 | Name | Work Assigned | Reason for the Assignment |
 |------|--------------|--------------------------|
-| Nyx Chen | **Subsystem F (Frontend):** Web dashboard UI, real-time parking map, reservation interface | Experience in web development (HTML/CSS/JS); strong UI/UX design skills |
-| Fahim Abrar | **Subsystem F (Backend):** Flask server, REST API, database, cloud MQTT client integration, AWS deployment | Background in Python and server-side programming; familiarity with cloud services |
-| Riya Sakhiya | **Subsystem A + B:** Ultrasonic sensor integration, RGB LED control, ESP32 firmware for sensing and display | Interest and coursework experience in embedded systems and Arduino programming |
-| Yuan Cong Yuan | **Subsystem C + D + E:** Servo barrier control, MQTT communication setup (local + cloud brokers), Raspberry Pi gateway control logic | Experience with networking protocols and microcontroller programming |
-| Cheng Zhang | **System Integration + Testing:** End-to-end integration across all three tiers (cloud ↔ gateway ↔ devices), calibration, testing, and project documentation | Strong debugging and system-level thinking skills; coordinates across sub-teams |
+|Riya Sakhiya | **Subsystem F (Frontend):** React.js parking map UI, real-time status updates, reservation/cancel interface | Experience in web development (React, HTML/CSS/JS); strong UI/UX design skills |
+| Cheng Zhang | **Subsystem F (Backend):** Flask server, REST API, database, cloud MQTT client integration, AWS deployment | Background in Python and server-side programming; familiarity with cloud services |
+| Fahim Abrar | **Subsystem A + B:** Ultrasonic sensor integration, RGB LED control, ESP32 firmware for sensing and display | Interest and coursework experience in embedded systems and Arduino programming |
+| Nyx Chen | **Subsystem C + D + E:** Servo barrier control, MQTT communication setup (local + cloud brokers), Raspberry Pi gateway control logic | Experience with networking protocols and microcontroller programming |
+| Yuan Cong Yuan | **System Integration + Testing:** End-to-end integration across all three tiers (cloud ↔ gateway ↔ devices), calibration, testing, and project documentation | Strong debugging and system-level thinking skills; coordinates across sub-teams |
 
 > *Note: This is an initial distribution based on team discussion. Roles may be adjusted during the project as needed.*
 
@@ -266,16 +276,16 @@ The project spans **8 weeks** from proposal approval to final demonstration. Tas
 | Week | Dates | Task | Sub-Team | Dependencies |
 |------|-------|------|----------|-------------|
 | 1 | Apr 7 – Apr 13 | Environment setup: install Arduino IDE, Flask, Mosquitto on Raspberry Pi; configure ESP32 WiFi; set up HiveMQ Cloud account and AWS account | All members | None (parallel) |
-| 2 | Apr 14 – Apr 20 | **Subsystem A:** HC-SR04 sensor reading and distance calibration on ESP32 | Riya | Week 1 complete |
-| 2 | Apr 14 – Apr 20 | **Subsystem D+E:** Set up Mosquitto on Raspberry Pi; ESP32 ↔ Pi local MQTT publish/subscribe test; connect Pi to HiveMQ Cloud broker | Yuan Cong | Week 1 complete |
-| 2 | Apr 14 – Apr 20 | **Subsystem F (Backend):** Flask project scaffold, database schema, basic REST API; deploy to AWS EC2 | Fahim | Week 1 complete |
-| 3 | Apr 21 – Apr 27 | **Subsystem A+D:** Sensor data published to local MQTT → Pi forwards to cloud → Flask backend receives and stores | Riya + Yuan Cong | Week 2 Subsystem A + D + E |
-| 3 | Apr 21 – Apr 27 | **Subsystem B:** RGB LED control based on sensor state (driven by Pi control logic) | Riya | Week 2 Subsystem A |
-| 3 | Apr 21 – Apr 27 | **Subsystem F (Frontend):** Dashboard layout, real-time spot status display via cloud API | Nyx | Week 2 Backend API |
-| 4 | Apr 28 – May 4 | **Subsystem C:** Servo barrier control via local MQTT commands from Raspberry Pi | Yuan Cong | Week 3 MQTT integration |
-| 4 | Apr 28 – May 4 | **Subsystem F:** Reservation logic (reserve, cancel, check-in) in backend + frontend; cloud MQTT command publishing | Nyx + Fahim | Week 3 Frontend + Backend |
-| 5 | May 5 – May 11 | **Integration:** End-to-end flow across all three tiers: dashboard reservation → cloud MQTT → Pi → ESP32 barrier/LED; and sensor → Pi → cloud → dashboard | Cheng + All | Week 4 all subsystems |
-| 6 | May 12 – May 18 | **Testing:** End-to-end testing of all scenarios (detect, reserve, cancel, conflict handling, cloud disconnection resilience); bug fixes | Cheng + All | Week 5 integration |
+| 2 | Apr 14 – Apr 20 | **Subsystem A:** HC-SR04 sensor reading and distance calibration on ESP32 | Fahim | Week 1 complete |
+| 2 | Apr 14 – Apr 20 | **Subsystem D+E:** Set up Mosquitto on Raspberry Pi; ESP32 ↔ Pi local MQTT publish/subscribe test; connect Pi to HiveMQ Cloud broker | Nyx | Week 1 complete |
+| 2 | Apr 14 – Apr 20 | **Subsystem F (Backend):** Flask project scaffold, database schema, basic REST API; deploy to AWS EC2 | Cheng | Week 1 complete |
+| 3 | Apr 21 – Apr 27 | **Subsystem A+D:** Sensor data published to local MQTT → Pi forwards to cloud → Flask backend receives and stores | Fahim + Nyx | Week 2 Subsystem A + D + E |
+| 3 | Apr 21 – Apr 27 | **Subsystem B:** RGB LED control based on sensor state (driven by Pi control logic) | Fahim | Week 2 Subsystem A |
+| 3 | Apr 21 – Apr 27 | **Subsystem F (Frontend):** React.js project scaffold (Create React App / Vite), component layout, real-time spot status display via Flask REST API | Riya | Week 2 Backend API |
+| 4 | Apr 28 – May 4 | **Subsystem C:** Servo barrier control via local MQTT commands from Raspberry Pi | Nyx | Week 3 MQTT integration |
+| 4 | Apr 28 – May 4 | **Subsystem F:** Reservation logic (reserve, cancel, check-in) in backend; React components for reservation flow (Axios calls, state management); cloud MQTT command publishing | Riya + Cheng | Week 3 Frontend + Backend |
+| 5 | May 5 – May 11 | **Integration:** End-to-end flow across all three tiers: dashboard reservation → cloud MQTT → Pi → ESP32 barrier/LED; and sensor → Pi → cloud → dashboard | Yuan Cong + All | Week 4 all subsystems |
+| 6 | May 12 – May 18 | **Testing:** End-to-end testing of all scenarios (detect, reserve, cancel, conflict handling, cloud disconnection resilience); bug fixes | Yuan Cong + All | Week 5 integration |
 | 7 | May 19 – May 25 | **Physical build:** Assemble scale-model parking lot; mount sensors, LEDs, and servo barriers; final calibration | All members | Week 6 testing |
 | 8 | May 26 – Jun 1 | **Documentation and demo preparation:** Final report, demo script, presentation slides | All members | Week 7 build complete |
 
@@ -287,15 +297,15 @@ Task / Sub-Team               Wk1     Wk2     Wk3     Wk4     Wk5     Wk6     Wk
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Environment Setup (All)       ██████
                                     ▲ M1
-Sensor (A) — Riya                     ██████  ───────
-LED (B) — Riya                                ██████
-MQTT + Gateway (D+E) — Yuan           ██████  ██████
-Barrier (C) — Yuan                           ██████
+Sensor (A) — Fahim                    ██████  ───────
+LED (B) — Fahim                               ██████
+MQTT + Gateway (D+E) — Nyx            ██████  ██████
+Barrier (C) — Nyx                            ██████
                                                       ▲ M2
-Backend (F) — Fahim                   ██████  ──────  ██████
-Frontend (F) — Nyx                            ██████  ██████
+Backend (F) — Cheng                   ██████  ──────  ██████
+Frontend (F) — Riya                           ██████  ██████
                                                               ▲ M3
-Integration — Cheng + All                                     ██████
+Integration — Yuan Cong + All                                 ██████
 Evaluation & Testing — All                                            ██████
                                                                       ▲ M4
 Physical Build — All                                                          ██████
@@ -311,7 +321,7 @@ Docs & Demo Prep — All                                                        
 | Milestone | Week | Date | Deliverable |
 |-----------|------|------|-------------|
 | **M1:** Environment Ready | 1 | Apr 13 | All tools installed; ESP32 connects to WiFi; AWS and HiveMQ accounts created |
-| **M2:** Subsystems Individually Working | 4 | May 4 | Sensor detects vehicles; LEDs change colour; barrier raises/lowers; dashboard shows spots; reservation API functional |
+| **M2:** Subsystems Individually Working | 4 | May 4 | Sensor detects vehicles; LEDs change color; barrier raises/lowers; dashboard shows spots; reservation API functional |
 | **M3:** End-to-End Integration Complete | 5 | May 11 | Full data flow works: sensor → Pi → cloud → dashboard; reservation → Pi → ESP32 barrier/LED |
 | **M4:** Evaluation & Testing Passed | 6 | May 18 | All metrics meet target thresholds (see Section 7.3); bugs fixed |
 | **M5:** Physical Demo Ready | 7 | May 25 | Scale-model parking lot assembled with all hardware mounted and calibrated |
@@ -334,7 +344,7 @@ Dedicated testing is scheduled in **Week 6**, with specific metrics and target t
 
 | Metric | Definition | Target | Test Method |
 |--------|-----------|--------|-------------|
-| **LED Correctness** | LED displays correct colour for current spot state | 100% | Verify LED colour across all state transitions (available → reserved → occupied → available) × 20 cycles |
+| **LED Correctness** | LED displays correct color for current spot state | 100% | Verify LED color across all state transitions (available → reserved → occupied → available) × 20 cycles |
 | **Barrier Actuation Success** | Servo moves to correct position on command | 100% | Send reserve/cancel commands 30 times; verify barrier position |
 
 **Communication and End-to-End (Subsystems D + E + F):**
@@ -344,13 +354,13 @@ Dedicated testing is scheduled in **Week 6**, with specific metrics and target t
 | **MQTT Message Delivery Rate** | % of messages successfully delivered (local + cloud) | ≥ 99% | Log published vs received messages over 200 message exchanges |
 | **End-to-End Latency** | Time from user reservation click to barrier raising | < 5 seconds | Timestamp reservation request on dashboard vs barrier movement; repeat 20 times |
 | **Cloud Disconnection Resilience** | Local control (sensor → LED) continues during cloud outage | Pass/Fail | Disconnect Pi from internet; verify local sensor → LED still works; reconnect and verify cloud re-sync |
-| **Dashboard Accuracy** | Dashboard spot status matches physical spot state | 100% | Compare dashboard display vs physical LED colours across all 3 spots over 10 state changes |
+| **Dashboard Accuracy** | Dashboard spot status matches physical spot state | 100% | Compare dashboard display vs physical LED colors across all 3 spots over 10 state changes |
 
 **Reservation Logic (Subsystem F):**
 
 | Metric | Definition | Target | Test Method |
 |--------|-----------|--------|-------------|
-| **Reservation Correctness** | Reserve, cancel, and check-in operations produce correct state transitions | 100% | Execute each operation 10 times; verify database state, LED colour, and barrier position |
+| **Reservation Correctness** | Reserve, cancel, and check-in operations produce correct state transitions | 100% | Execute each operation 10 times; verify database state, LED color, and barrier position |
 | **Conflict Handling** | System correctly detects and alerts when an unreserved vehicle occupies a reserved spot | 100% | Place vehicle at reserved spot 10 times; verify conflict alert is generated |
 
 > **Note:** If any metric falls below its target, the team will diagnose the root cause, adjust sensor thresholds or firmware logic, and re-test. Results will be documented in the final report.
