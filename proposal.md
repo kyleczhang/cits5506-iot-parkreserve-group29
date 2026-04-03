@@ -99,7 +99,7 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
    - **Red**: spot is occupied (vehicle detected)
    - **Yellow**: spot is reserved via the web dashboard
 
-3. **Barrier Actuation and Audio Feedback:** A servo motor at each spot controls a miniature barrier arm, and a piezo buzzer provides audio confirmation. When a reservation is made, the barrier rises (servo rotates to blocking position) with a confirmation tone. When the reserved user arrives and checks in via the dashboard, the barrier lowers with a distinct tone.
+3. **Barrier Actuation:** A servo motor at each spot controls a miniature barrier arm. When a reservation is made, the barrier rises (servo rotates to blocking position). When the reserved user arrives and checks in via the dashboard, the barrier lowers.
 
 4. **Local Processing (ESP32):** Each ESP32 node reads its ultrasonic sensor, drives its RGB LED, and controls its servo motor. It connects to the Raspberry Pi gateway via local WiFi using MQTT, publishing occupancy status and subscribing to control commands.
 
@@ -173,10 +173,6 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
        │ │ Servo    │ │    │ │ Servo    │ │      │ │ Servo    │ │
        │ │ Barrier  │ │    │ │ Barrier  │ │      │ │ Barrier  │ │
        │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
-       │ ┌──────────┐ │    │ ┌──────────┐ │      │ ┌──────────┐ │
-       │ │ Piezo    │ │    │ │ Piezo    │ │      │ │ Piezo    │ │
-       │ │ Buzzer   │ │    │ │ Buzzer   │ │      │ │ Buzzer   │ │
-       │ └──────────┘ │    │ └──────────┘ │      │ └──────────┘ │
        └──────────────┘    └──────────────┘      └──────────────┘
 ```
 
@@ -202,10 +198,10 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
     - `reserved` → yellow
 - **Interdependence:** Depends on Subsystem A (sensor reading) and commands from Subsystem D (relayed by the Raspberry Pi gateway).
 
-#### Subsystem C: Barrier and Audio Feedback Unit (Hardware + Firmware)
+#### Subsystem C: Barrier Unit (Hardware + Firmware)
 
-- **Hardware:** SG90 micro servo motor and mini piezo buzzer per spot. Servo arm acts as a miniature barrier gate; buzzer provides audio feedback.
-- **Software:** On receiving a `reserve` command via local MQTT (from Raspberry Pi), the ESP32 rotates the servo to 90° (barrier up) and sounds a short confirmation tone. On `cancel` or `check-in`, it rotates to 0° (barrier down) with a distinct tone. The buzzer also alerts on conflict events (e.g., vehicle detected at a reserved spot).
+- **Hardware:** SG90 micro servo motor per spot. Servo arm acts as a miniature barrier gate.
+- **Software:** On receiving a `reserve` command via local MQTT (from Raspberry Pi), the ESP32 rotates the servo to 90° (barrier up). On `cancel` or `check-in`, it rotates to 0° (barrier down).
 - **Interdependence:** Triggered by Subsystem D (commands originating from cloud, relayed by Raspberry Pi). Must coordinate with Subsystem A: if a vehicle is detected while barrier is up, alert the gateway of a conflict.
 
 #### Subsystem D: Communication Layer (Software)
@@ -282,7 +278,7 @@ Environment Setup (All)       ██████
 Sensor (A) — Riya                     ██████  ───────
 LED (B) — Riya                                ██████
 MQTT + Gateway (D+E) — Yuan           ██████  ██████
-Barrier + Buzzer (C) — Yuan                           ██████
+Barrier (C) — Yuan                           ██████
                                                       ▲ M2
 Backend (F) — Fahim                   ██████  ──────  ██████
 Frontend (F) — Nyx                            ██████  ██████
@@ -328,7 +324,6 @@ Dedicated testing is scheduled in **Week 6**, with specific metrics and target t
 |--------|-----------|--------|-------------|
 | **LED Correctness** | LED displays correct colour for current spot state | 100% | Verify LED colour across all state transitions (available → reserved → occupied → available) × 20 cycles |
 | **Barrier Actuation Success** | Servo moves to correct position on command | 100% | Send reserve/cancel commands 30 times; verify barrier position |
-| **Buzzer Feedback** | Correct tone plays on barrier raise/lower events | 100% | Verify audio on each barrier actuation during above test |
 
 **Communication and End-to-End (Subsystems D + E + F):**
 
@@ -370,7 +365,6 @@ Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS fre
 | 3 | Ultrasonic Sensor Module (×3) | HC-SR04 compatible dual ultrasonic distance sensor (XC4442). Range 2–450 cm. One per spot for vehicle detection. | No | $9.95 × 3 = **$29.85** | [Jaycar XC4442](https://www.jaycar.com.au/arduino-compatible-dual-ultrasonic-sensor-module/p/XC4442) | 1–3 business days |
 | 4 | Micro Servo Motor (×3) | 9G Micro Servo Motor (YM2758). One per spot for barrier actuation. | No | $11.95 × 3 = **$35.85** | [Jaycar YM2758](https://www.jaycar.com.au/arduino-compatible-9g-micro-servo-motor/p/YM2758) | 1–3 business days |
 | 5 | WS2812 RGB LED Module (×3) | Addressable RGB LED (ZD0272). One per spot for status indication (green/red/yellow). | No | $4.95 × 3 = **$14.85** | [Jaycar ZD0272](https://www.jaycar.com.au/ws2812-rgb-led-module/p/ZD0272) | 1–3 business days |
-| 6 | Mini Piezo Buzzer (×3) | Mini Piezo Buzzer 3–16 VDC (AB3462). One per spot for audio feedback on barrier raise/lower events. | No | $4.50 × 3 = **$13.50** | [Jaycar AB3462](https://www.jaycar.com.au/mini-piezo-buzzer-3-16vdc/p/AB3462) | 1–3 business days |
 | 7 | Breadboard (×3) | 400-point solderless breadboard for prototyping each node. | Yes | $0.00 | [Jaycar PB8820](https://www.jaycar.com.au/arduino-compatible-breadboard-with-400-tie-points/p/PB8820) | — |
 | 8 | Jumper Wires Kit | Male-to-male and male-to-female jumper leads for wiring. | Yes | $0.00 | [Jaycar WC6027](https://www.jaycar.com.au/jumper-lead-mixed-pack-100-pieces/p/WC6027) | — |
 | 9 | USB Micro-B Cables (×3) | For programming and powering ESP32 boards. | Yes | $0.00 | — | — |
@@ -392,10 +386,9 @@ Budget: **$100 AUD** (excluding items available at UWA). Cloud services (AWS fre
 | Ultrasonic sensors (×3) | $29.85 |
 | Servo motors (×3) | $35.85 |
 | RGB LED modules (×3) | $14.85 |
-| Piezo buzzers (×3) | $13.50 |
 | Cloud services | $0.00 |
-| **Total to purchase** | **$94.05** |
-| **Remaining budget** | **$5.95** |
+| **Total to purchase** | **$80.55** |
+| **Remaining budget** | **$19.45** |
 
 > All items are sourced from Jaycar with 1–3 business day delivery. We will confirm availability of UWA-provided items (ESP32 boards, Raspberry Pi, breadboards, jumper wires) with Lab Technician Andy Burrell (andrew.burrell@uwa.edu.au) before ordering.
 
