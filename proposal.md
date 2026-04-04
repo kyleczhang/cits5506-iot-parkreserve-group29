@@ -271,12 +271,12 @@ The system uses a **three-tier architecture**: a cloud-hosted backend for busine
 
 ## 7. Project Timeline
 
-The project spans **8 weeks** from proposal approval to final demonstration. Tasks are assigned to sub-teams with sequential and parallel dependencies shown.
+The project spans **7 weeks** from proposal submitted to final demonstration (due **May 22**). Tasks are assigned to sub-teams with sequential and parallel dependencies shown.
 
 | Week | Dates | Task | Sub-Team | Dependencies |
 |------|-------|------|----------|-------------|
 | 1 | Apr 7 – Apr 13 | Environment setup: install Arduino IDE, Flask, Mosquitto on Raspberry Pi; configure ESP32 WiFi; set up HiveMQ Cloud account and AWS account | All members | None (parallel) |
-| 2 | Apr 14 – Apr 20 | **Subsystem A:** HC-SR04 sensor reading and distance calibration on ESP32 | Fahim | Week 1 complete |
+| 2 | Apr 14 – Apr 20 | **Subsystem A:** RCWL-1601 sensor reading and distance calibration on ESP32 | Fahim | Week 1 complete |
 | 2 | Apr 14 – Apr 20 | **Subsystem D+E:** Set up Mosquitto on Raspberry Pi; ESP32 ↔ Pi local MQTT publish/subscribe test; connect Pi to HiveMQ Cloud broker | Nyx | Week 1 complete |
 | 2 | Apr 14 – Apr 20 | **Subsystem F (Backend):** Flask project scaffold, database schema, basic REST API; deploy to AWS EC2 | Cheng | Week 1 complete |
 | 3 | Apr 21 – Apr 27 | **Subsystem A+D:** Sensor data published to local MQTT → Pi forwards to cloud → Flask backend receives and stores | Fahim + Nyx | Week 2 Subsystem A + D + E |
@@ -286,34 +286,33 @@ The project spans **8 weeks** from proposal approval to final demonstration. Tas
 | 4 | Apr 28 – May 4 | **Subsystem F:** Reservation logic (reserve, cancel, check-in) in backend; React components for reservation flow (Axios calls, state management); cloud MQTT command publishing | Riya + Cheng | Week 3 Frontend + Backend |
 | 5 | May 5 – May 11 | **Integration:** End-to-end flow across all three tiers: dashboard reservation → cloud MQTT → Pi → ESP32 barrier/LED; and sensor → Pi → cloud → dashboard | Yuan Cong + All | Week 4 all subsystems |
 | 6 | May 12 – May 18 | **Testing:** End-to-end testing of all scenarios (detect, reserve, cancel, conflict handling, cloud disconnection resilience); bug fixes | Yuan Cong + All | Week 5 integration |
-| 7 | May 19 – May 25 | **Physical build:** Assemble scale-model parking lot; mount sensors, LEDs, and servo barriers; final calibration | All members | Week 6 testing |
-| 8 | May 26 – Jun 1 | **Documentation and demo preparation:** Final report, demo script, presentation slides | All members | Week 7 build complete |
+| 6 | May 12 – May 18 | **Physical build:** Assemble scale-model parking lot; mount sensors, LEDs, and servo barriers; final calibration (runs in parallel with testing) | All members | Week 5 integration |
+| 7 | May 19 – May 22 | **Documentation and demo preparation:** Final report, demo script, presentation slides | All members | Week 6 testing + build |
 
 ### 7.1 Gantt Chart
 
 ```
-Task / Sub-Team               Wk1     Wk2     Wk3     Wk4     Wk5     Wk6     Wk7     Wk8
-                              Apr7    Apr14   Apr21   Apr28   May5    May12   May19   May26
-─────────────────────────────────────────────────────────────────────────────────────────────
+Task / Sub-Team               Wk1     Wk2     Wk3     Wk4     Wk5     Wk6     Wk7
+                              Apr7    Apr14   Apr21   Apr28   May5    May12   May19–22
+─────────────────────────────────────────────────────────────────────────────────────
 Environment Setup (All)       ██████
                                     ▲ M1
 Sensor (A) — Fahim                    ██████  ───────
 LED (B) — Fahim                               ██████
 MQTT + Gateway (D+E) — Nyx            ██████  ██████
-Barrier (C) — Nyx                            ██████
-                                                      ▲ M2
+Barrier (C) — Nyx                                     ██████
+                                                              ▲ M2
 Backend (F) — Cheng                   ██████  ──────  ██████
 Frontend (F) — Riya                           ██████  ██████
-                                                              ▲ M3
+                                                                      ▲ M3
 Integration — Yuan Cong + All                                 ██████
 Evaluation & Testing — All                                            ██████
-                                                                      ▲ M4
-Physical Build — All                                                          ██████
-                                                                              ▲ M5
-Docs & Demo Prep — All                                                                ██████
-                                                                                      ▲ M6
-─────────────────────────────────────────────────────────────────────────────────────────────
-██████ = active work    ─────── = ongoing/support    ▲ = milestone
+Physical Build — All                                                  ██████
+                                                                             ▲ M4
+Docs & Demo Prep — All                                                        ████
+                                                                                  ▲ M5
+─────────────────────────────────────────────────────────────────────────────────────
+██████ = active work    ─────── = ongoing/support    ████ = partial week (4 days)    ▲ = milestone
 ```
 
 ### 7.2 Milestones
@@ -323,9 +322,8 @@ Docs & Demo Prep — All                                                        
 | **M1:** Environment Ready | 1 | Apr 13 | All tools installed; ESP32 connects to WiFi; AWS and HiveMQ accounts created |
 | **M2:** Subsystems Individually Working | 4 | May 4 | Sensor detects vehicles; LEDs change color; barrier raises/lowers; dashboard shows spots; reservation API functional |
 | **M3:** End-to-End Integration Complete | 5 | May 11 | Full data flow works: sensor → Pi → cloud → dashboard; reservation → Pi → ESP32 barrier/LED |
-| **M4:** Evaluation & Testing Passed | 6 | May 18 | All metrics meet target thresholds (see Section 7.3); bugs fixed |
-| **M5:** Physical Demo Ready | 7 | May 25 | Scale-model parking lot assembled with all hardware mounted and calibrated |
-| **M6:** Final Submission | 8 | Jun 1 | Report, demo video, presentation slides completed |
+| **M4:** Testing Passed + Physical Demo Ready | 6 | May 18 | All metrics meet target thresholds (see Section 7.3); scale-model parking lot assembled and calibrated |
+| **M5:** Final Submission | 7 | May 22 | Report, demo video, presentation slides completed |
 
 ### 7.3 Evaluation and Testing Plan
 
@@ -372,7 +370,8 @@ Dedicated testing is scheduled in **Week 6**, with specific metrics and target t
 - Subsystem C depends on Subsystem D+E (barrier controlled via MQTT commands from Pi).
 - Frontend depends on Backend API and cloud MQTT being ready.
 - Integration (Week 5) requires all three tiers (cloud, gateway, devices) to be individually functional.
-- Evaluation & Testing (Week 6) requires integration to be complete; results feed back into Week 7 physical build adjustments.
+- Evaluation & Testing and Physical Build (both Week 6) run in parallel; testing results inform final hardware calibration.
+- Documentation & Demo Prep (Week 7, May 19–22) requires testing and build to be complete by May 18.
 
 ---
 
