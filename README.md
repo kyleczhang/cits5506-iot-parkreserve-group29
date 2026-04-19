@@ -19,13 +19,3 @@ Fahim Abrar (24435912)
 Riya Sakhiya (24601375)
 Yuan Cong Yuan (25003723)
 Cheng Zhang (24878502)
-
-## file structure
-
-```
-├── README.md
-├── proposal.md
-├── 2025-rubric-proposal-ver02.pdf # this is the rubric for the proposal
-├── project-proposal-specimen-document.pdf # this is the template for the proposal
-├── sample-project-proposal.pdf # this is a sample proposal
-```
