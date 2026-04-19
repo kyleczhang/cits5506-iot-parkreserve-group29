@@ -12,6 +12,7 @@ function ParkingGrid() {
       style={{
         display: "flex",
         justifyContent: "center",
+        flexWrap: "wrap",
         gap: "30px",
         marginTop: "30px"
       }}

@@ -25,8 +25,6 @@ function SpotCard({ id, status }) {
         textAlign: "center",
         color: getTextColor(),
         fontWeight: "bold",
-        cursor: "pointer",
-        transition: "transform 0.2s",
         boxShadow: "0 4px 8px rgba(0,0,0,0.2)"
       }}
     >
