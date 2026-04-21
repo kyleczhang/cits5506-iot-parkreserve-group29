@@ -1,0 +1,39 @@
+gantt
+    title ParkReserve — Project Gantt Chart (8 Weeks)
+    dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
+    tickInterval 1week
+
+    section All Members
+    Environment Setup               :env,   2026-04-06, 7d
+    Physical Build                  :phys,  2026-05-11, 7d
+    Docs & Demo Prep                :docs,  2026-05-18, 4d
+
+    section Fahim  (A + B)
+    Sensor A — active               :a1,    2026-04-13, 7d
+    Sensor A — support              :done,  a2, 2026-04-20, 7d
+    LED Indicator B                 :b1,    2026-04-20, 7d
+
+    section Nyx  (C + D + E)
+    MQTT + Gateway D+E              :de1,   2026-04-13, 14d
+    Barrier Control C               :c1,    2026-04-27, 7d
+
+    section Cheng  (Backend F)
+    Backend — scaffold & API        :be1,   2026-04-13, 7d
+    Backend — support               :done,  be2, 2026-04-20, 7d
+    Backend — reservation logic     :be3,   2026-04-27, 7d
+
+    section Riya  (Frontend F)
+    Frontend — scaffold & map       :fe1,   2026-04-20, 7d
+    Frontend — reservation UI       :fe2,   2026-04-27, 7d
+
+    section Yuan Cong  (Integration + Testing)
+    Integration                     :integ, 2026-05-04, 7d
+    Evaluation & Testing            :test,  2026-05-11, 7d
+
+    section Milestones
+    M1 — Environment Ready                   :milestone, m1, 2026-04-13, 0d
+    M2 — Subsystems Individually Working     :milestone, m2, 2026-05-04, 0d
+    M3 — End-to-End Integration Complete     :milestone, m3, 2026-05-11, 0d
+    M4 — Testing Passed + Physical Demo Ready :milestone, m4, 2026-05-18, 0d
+    M5 — Final Submission                    :milestone, m5, 2026-05-22, 0d
