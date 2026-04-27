@@ -1,0 +1,647 @@
+asyncapi: "2.6.0"
+info:
+  title: ParkReserve Backend — Async API
+  version: "1.0.0"
+  description: |
+    Asynchronous interfaces for the ParkReserve cloud backend — the parts
+    that OpenAPI cannot describe:
+
+    1. **MQTT** between the Raspberry Pi (Subsystem E) and the backend
+       (Subsystem F), brokered by HiveMQ Cloud.
+    2. **Socket.IO** between the backend and the React dashboard on
+       namespace `/ws`.
+
+    Authoritative references:
+    [backend-implementation-plan.md §7.2 + §7.3](backend-implementation-plan.md)
+    and the pydantic schemas in
+    [backend/app/mqtt/topics.py](../../backend/app/mqtt/topics.py).
+
+    **Operation semantics (AsyncAPI 2.x).** Operations are written from the
+    *backend application's* point of view:
+
+    | Operation | Meaning |
+    |-----------|---------|
+    | `publish`   | Backend produces messages to this channel |
+    | `subscribe` | Backend consumes messages from this channel |
+
+    So a Pi → Backend topic appears as a `subscribe` operation, and a
+    Backend → Pi topic appears as a `publish` operation.
+
+defaultContentType: application/json
+
+servers:
+  hivemq:
+    url: ssl://{host}:{port}
+    protocol: mqtt
+    protocolVersion: "3.1.1"
+    description: |
+      Cloud MQTT broker (HiveMQ Cloud free tier). The Pi and the backend
+      are both clients. TLS is required when `MQTT_TLS=true`.
+    variables:
+      host:
+        default: "broker.hivemq.cloud"
+      port:
+        default: "8883"
+    security:
+      - mqttUserPass: []
+
+  socketio:
+    url: "{host}:{port}/ws"
+    protocol: ws
+    description: |
+      Flask-SocketIO namespace `/ws`. Although AsyncAPI's WebSocket
+      binding doesn't model Socket.IO event multiplexing natively, each
+      event name below is the literal value passed to
+      `socketio.emit(event, payload, namespace="/ws")` — the dashboard
+      receives them via `socket.on(event, handler)`.
+    variables:
+      host:
+        default: "localhost"
+      port:
+        default: "5000"
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+channels:
+  # ============================================================== MQTT (Pi)
+  cloud/bay/{code}/state:
+    description: |
+      Pi → Backend. The Pi mirrors authoritative bay state on every
+      transition (and on resync replay). Backend persists into
+      `parking_bays.state` via `bay_service.apply_state` and writes a
+      `bay_events` audit row in the same transaction.
+    parameters:
+      code:
+        $ref: "#/components/parameters/BayCode"
+    bindings:
+      mqtt:
+        qos: 1
+    subscribe:
+      operationId: onBayState
+      summary: Receive bay-state mirror updates from the Pi.
+      message:
+        $ref: "#/components/messages/BayState"
+
+  cloud/bay/{code}/event:
+    description: |
+      Pi → Backend. State-machine events emitted by the Pi. Event names
+      align with the backend `event_dispatcher` handlers; idempotency on
+      `event_id` is mandatory because the Pi replays after every
+      reconnect.
+    parameters:
+      code:
+        $ref: "#/components/parameters/BayCode"
+    bindings:
+      mqtt:
+        qos: 1
+    subscribe:
+      operationId: onBayEvent
+      summary: Receive state-machine events from the Pi.
+      message:
+        $ref: "#/components/messages/BayEvent"
+
+  cloud/system/heartbeat:
+    description: |
+      Pi → Backend, every ~10 s. Absence > 30 s flips the bay-state
+      mirror to `offline` for the Pi's bays. `extra="ignore"` on the
+      pydantic schema — extra keys are tolerated.
+    bindings:
+      mqtt:
+        qos: 0
+    subscribe:
+      operationId: onHeartbeat
+      summary: Receive Pi liveness pings.
+      message:
+        $ref: "#/components/messages/Heartbeat"
+
+  # ============================================================== MQTT (Backend)
+  cloud/bay/{code}/reservation:
+    description: |
+      Backend → Pi. Published on every reservation create / cancel /
+      check-in, *and* on `update_plates` whenever the user adds or
+      removes a plate while a reservation is active. The user's
+      *current* full bound-plate list is included so the Pi's LPR
+      matcher always has the freshest set.
+    parameters:
+      code:
+        $ref: "#/components/parameters/BayCode"
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+    publish:
+      operationId: pushReservation
+      summary: Push reservation / plate-list updates to the Pi.
+      message:
+        $ref: "#/components/messages/ReservationCommand"
+
+  cloud/system/resync:
+    description: |
+      Backend → Pi. Empty payload sent on backend reconnect to ask the
+      Pi to replay the latest `cloud/bay/<code>/state` for every bay
+      *and* the latest `cloud/bay/<code>/reservation` for every open
+      reservation. Replay is idempotent on `event_id`.
+    bindings:
+      mqtt:
+        qos: 1
+    publish:
+      operationId: pushResync
+      summary: Request a Pi state replay.
+      message:
+        $ref: "#/components/messages/Resync"
+
+  # ============================================================== Socket.IO (server → client)
+  bay.updated:
+    description: |
+      Server → client. Emitted whenever the bay-state mirror changes
+      (i.e. once per `cloud/bay/<code>/state` transition the backend
+      accepts).
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsBayUpdated
+      message:
+        $ref: "#/components/messages/WsBayUpdated"
+
+  reservation.updated:
+    description: Server → client. Any reservation status transition.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsReservationUpdated
+      message:
+        $ref: "#/components/messages/WsReservationUpdated"
+
+  reservation.pending_check_in:
+    description: |
+      Server → client. Vehicle detected in a reserved bay but LPR did
+      not auto-resolve — the dashboard renders the "please check in
+      manually" prompt for the reservation holder.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsReservationPendingCheckIn
+      message:
+        $ref: "#/components/messages/WsReservationPendingCheckIn"
+
+  reservation.auto_checked_in:
+    description: |
+      Server → client. LPR matched a bound plate; reservation
+      auto-transitioned to `CHECKED_IN`. Drives the "you're checked in
+      at Bay X" toast.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsReservationAutoCheckedIn
+      message:
+        $ref: "#/components/messages/WsReservationAutoCheckedIn"
+
+  plate.updated:
+    description: |
+      Server → client. The current user's bound-plate list changed
+      (add or remove). Carries the full new list.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsPlateUpdated
+      message:
+        $ref: "#/components/messages/WsPlateUpdated"
+
+  conflict.raised:
+    description: Server → admin clients. New strong/weak conflict opened.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsConflictRaised
+      message:
+        $ref: "#/components/messages/WsConflict"
+
+  conflict.resolved:
+    description: |
+      Server → admin clients. Existing conflict marked resolved (by
+      admin action, by vehicle leaving, or by a late weak-conflict
+      check-in).
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsConflictResolved
+      message:
+        $ref: "#/components/messages/WsConflict"
+
+  # ============================================================== Socket.IO (client → server)
+  subscribe:
+    description: |
+      Client → server. Optional channel-filter request. With no
+      `bay_codes` (or an empty list), the client receives updates for
+      all bays — the default behaviour.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    subscribe:
+      operationId: wsSubscribe
+      message:
+        $ref: "#/components/messages/WsSubscribeRequest"
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    mqttUserPass:
+      type: userPassword
+      description: |
+        HiveMQ broker username / password (configured via
+        `MQTT_USERNAME` / `MQTT_PASSWORD`). Both Pi and backend
+        authenticate this way.
+
+  parameters:
+    BayCode:
+      description: |
+        Bay code (e.g. `A1`). Matches `parking_bays.code`. Topic builders
+        and parsers in `app/mqtt/topics.py` enforce a single segment
+        (no slashes).
+      schema:
+        type: string
+        pattern: "^[^/]+$"
+        example: "A1"
+
+  # ---------------------------------------------------------------- Messages
+  messages:
+    BayState:
+      name: BayState
+      title: Bay-state mirror update (Pi → Backend)
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/StatePayload"
+
+    BayEvent:
+      name: BayEvent
+      title: State-machine event (Pi → Backend)
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/EventPayload"
+
+    Heartbeat:
+      name: Heartbeat
+      title: Pi liveness ping
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/HeartbeatPayload"
+
+    ReservationCommand:
+      name: ReservationCommand
+      title: Reservation / plate-list push (Backend → Pi)
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/ReservationCommand"
+
+    Resync:
+      name: Resync
+      title: Pi state-replay request (Backend → Pi)
+      summary: Empty payload — the topic alone is the signal.
+      contentType: application/json
+      payload:
+        type: object
+        additionalProperties: false
+
+    # -------- Socket.IO message envelopes (server → client)
+    WsBayUpdated:
+      name: WsBayUpdated
+      title: "`bay.updated` payload"
+      payload:
+        $ref: "#/components/schemas/WsBayPayload"
+
+    WsReservationUpdated:
+      name: WsReservationUpdated
+      title: "`reservation.updated` payload"
+      payload:
+        $ref: "#/components/schemas/WsReservationPayload"
+
+    WsReservationPendingCheckIn:
+      name: WsReservationPendingCheckIn
+      title: "`reservation.pending_check_in` payload"
+      payload:
+        $ref: "#/components/schemas/WsReservationPendingCheckInPayload"
+
+    WsReservationAutoCheckedIn:
+      name: WsReservationAutoCheckedIn
+      title: "`reservation.auto_checked_in` payload"
+      payload:
+        $ref: "#/components/schemas/WsReservationAutoCheckedInPayload"
+
+    WsPlateUpdated:
+      name: WsPlateUpdated
+      title: "`plate.updated` payload"
+      payload:
+        $ref: "#/components/schemas/WsPlatePayload"
+
+    WsConflict:
+      name: WsConflict
+      title: "`conflict.raised` / `conflict.resolved` payload"
+      payload:
+        $ref: "#/components/schemas/WsConflictPayload"
+
+    # -------- Socket.IO message envelopes (client → server)
+    WsSubscribeRequest:
+      name: WsSubscribeRequest
+      title: "`subscribe` payload"
+      payload:
+        $ref: "#/components/schemas/WsSubscribePayload"
+
+  # ----------------------------------------------------------------- Schemas
+  schemas:
+    # ============= MQTT payloads — mirrored from app/mqtt/topics.py =========
+    BayStateLiteral:
+      type: string
+      enum:
+        - available
+        - reserved
+        - occupied
+        - pending_check_in
+        - reserved_checked_in
+        - conflict
+        - offline
+      description: |
+        Includes `offline` even though the `parking_bays.state` mirror
+        does not — the Pi may briefly publish `offline` during sensor
+        bring-up.
+
+    EventLiteral:
+      type: string
+      enum:
+        - sensor_online
+        - sensor_offline
+        - auto_check_in
+        - pending_check_in
+        - check_in_confirmed
+        - conflict_strong
+        - conflict_weak
+        - no_show
+
+    ReservationActionLiteral:
+      type: string
+      enum: [create, cancel, check_in, update_plates]
+
+    StatePayload:
+      type: object
+      additionalProperties: false
+      required: [state, last_distance_cm, ts]
+      properties:
+        state:
+          $ref: "#/components/schemas/BayStateLiteral"
+        last_distance_cm:
+          type: number
+          minimum: 0
+          maximum: 500
+          description: Most recent ultrasonic reading from the RCWL-1601 (cm).
+        ts:
+          type: string
+          format: date-time
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Optional Pi-supplied UUID for idempotent replay. Required in
+            practice — a missing `event_id` skips the unique-index dedup
+            and risks double-counting on reconnect.
+
+    EventPayload:
+      type: object
+      additionalProperties: false
+      required: [event, ts]
+      properties:
+        event:
+          $ref: "#/components/schemas/EventLiteral"
+        ts:
+          type: string
+          format: date-time
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Required for any event that mutates business state. Replay
+            dedup keys on this — see `bay_events.source_event_id`.
+        reservation_id:
+          type: string
+          format: uuid
+          nullable: true
+        recognised_plate:
+          type: string
+          maxLength: 16
+          nullable: true
+          description: |
+            Populated on `auto_check_in` and `conflict_strong` only.
+        lpr_confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: |
+            Populated on `auto_check_in` and `conflict_strong` only.
+
+    HeartbeatPayload:
+      type: object
+      additionalProperties: true
+      properties:
+        pi_id:
+          type: string
+          nullable: true
+          example: "pi-01"
+        ts:
+          type: string
+          format: date-time
+          nullable: true
+
+    ReservationCommand:
+      type: object
+      additionalProperties: false
+      required: [action, ts]
+      properties:
+        action:
+          $ref: "#/components/schemas/ReservationActionLiteral"
+        reservation_id:
+          type: string
+          format: uuid
+          nullable: true
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        bound_plates:
+          type: array
+          description: |
+            User's *current* bound plate list. Empty allowed (e.g. on
+            `cancel` after the holder unbinds all plates).
+          items:
+            type: string
+            maxLength: 16
+        expected_arrival_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present on `create` and `update_plates`.
+        ts:
+          type: string
+          format: date-time
+
+    # ============= Socket.IO payloads — mirrored from app/sockets/events.py
+    WsBayPayload:
+      type: object
+      required: [code, label, state]
+      properties:
+        code: { type: string }
+        label: { type: string }
+        state: { $ref: "#/components/schemas/BayStateLiteral" }
+        last_distance_cm:
+          type: number
+          nullable: true
+        sensor_last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        current_reservation_id:
+          type: string
+          format: uuid
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WsReservationPayload:
+      type: object
+      required: [id, bay_code, user_id, status]
+      properties:
+        id: { type: string, format: uuid }
+        bay_code: { type: string }
+        user_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum:
+            - active
+            - pending_check_in
+            - checked_in
+            - completed
+            - cancelled
+            - cancelled_late
+            - expired_no_show
+            - in_conflict
+        expected_arrival_time:
+          type: string
+          format: date-time
+          nullable: true
+        booked_at:
+          type: string
+          format: date-time
+          nullable: true
+        check_in_grace_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        checked_in_at:
+          type: string
+          format: date-time
+          nullable: true
+        check_in_mechanism:
+          type: string
+          enum: [auto_lpr, qr, manual]
+          nullable: true
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WsReservationPendingCheckInPayload:
+      type: object
+      required: [id, bay_code, user_id]
+      properties:
+        id: { type: string, format: uuid }
+        bay_code: { type: string }
+        user_id: { type: string, format: uuid }
+        detected_at:
+          type: string
+          format: date-time
+          nullable: true
+        check_in_grace_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WsReservationAutoCheckedInPayload:
+      allOf:
+        - $ref: "#/components/schemas/WsReservationPayload"
+        - type: object
+          required: [recognised_plate]
+          properties:
+            recognised_plate: { type: string }
+            checked_in_at:
+              type: string
+              format: date-time
+              nullable: true
+
+    WsPlatePayload:
+      type: object
+      required: [user_id, plates]
+      properties:
+        user_id: { type: string, format: uuid }
+        plates:
+          type: array
+          items:
+            type: object
+            required: [plate]
+            properties:
+              plate: { type: string }
+              label:
+                type: string
+                nullable: true
+
+    WsConflictPayload:
+      type: object
+      required: [id, bay_code, kind]
+      properties:
+        id: { type: string, format: uuid }
+        bay_code: { type: string }
+        kind:
+          type: string
+          enum: [strong, weak]
+        recognised_plate:
+          type: string
+          nullable: true
+        detected_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolution:
+          type: string
+          enum: [vehicle_left, admin_resolved, user_arrived_and_checked_in]
+          nullable: true
+
+    WsSubscribePayload:
+      type: object
+      additionalProperties: false
+      properties:
+        bay_codes:
+          type: array
+          description: |
+            Optional filter — only emit updates for these bay codes. If
+            omitted or empty, the client receives all bays (default).
+          items:
+            type: string
