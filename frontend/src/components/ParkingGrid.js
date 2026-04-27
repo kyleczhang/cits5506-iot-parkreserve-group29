@@ -1,3 +1,5 @@
+import SpotCard from "./SpotCard";
+
 function ParkingGrid() {
   const spots = [
     { id: 1, status: "available" },
@@ -6,11 +8,17 @@ function ParkingGrid() {
   ];
 
   return (
-    <div>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        flexWrap: "wrap",
+        gap: "30px",
+        marginTop: "30px"
+      }}
+    >
       {spots.map((spot) => (
-        <div key={spot.id}>
-          Spot {spot.id} - {spot.status}
-        </div>
+        <SpotCard key={spot.id} id={spot.id} status={spot.status} />
       ))}
     </div>
   );
