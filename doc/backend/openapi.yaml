@@ -1,0 +1,980 @@
+openapi: 3.0.3
+info:
+  title: ParkReserve Backend API
+  description: |
+    REST API for the ParkReserve cloud backend (CITS5506 Subsystem F).
+
+    All `/api/v1/*` endpoints return `application/json` and use a uniform
+    error envelope:
+
+    ```json
+    { "error": { "code": "string", "message": "string", "details": {} } }
+    ```
+
+    The Pi owns the per-bay state machine; the backend mirrors it and runs
+    the reservation business layer (booking window, breach accounting,
+    plate management, notifications). See
+    [backend-implementation-plan.md](backend-implementation-plan.md) §7 for
+    the authoritative interface description.
+  version: "1.0.0"
+  contact:
+    name: ParkReserve Group 29 (CITS5506)
+
+servers:
+  - url: http://localhost:5000
+    description: Local development (`make dev`)
+  - url: https://{host}
+    description: Production
+    variables:
+      host:
+        default: api.parkreserve.example
+
+tags:
+  - name: health
+    description: Liveness / readiness probes.
+  - name: auth
+    description: Registration, login, current-user profile.
+  - name: bays
+    description: Read-only views of the parking-bay mirror (state owned by Pi).
+  - name: plates
+    description: Bind / unbind LPR plates against the current user.
+  - name: reservations
+    description: Booking, cancel, fallback check-in.
+  - name: breaches
+    description: Current-month breach list and ban status for the current user.
+  - name: conflicts
+    description: Admin view of unresolved facility conflicts and resolution.
+  - name: internal
+    description: Server-to-server endpoints called by the Raspberry Pi.
+
+security:
+  - BearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe (DB + MQTT)
+      description: |
+        Returns 200 when the database is reachable and the MQTT client is
+        connected (or disabled). Returns 503 if either the DB check fails
+        or the MQTT client is enabled but not connected.
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessResponse" }
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessResponse" }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new driver account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserOut" }
+        "409":
+          description: Email already registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: Invalid payload (bad email, short password, etc.).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Exchange credentials for a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "401":
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Current user profile
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/bays:
+    get:
+      tags: [bays]
+      summary: List all bays with mirrored Pi state
+      security: []
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BayOut" }
+
+  /api/v1/bays/{code}:
+    get:
+      tags: [bays]
+      summary: Bay detail
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/BayCode"
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BayOut" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/bays/{code}/events:
+    get:
+      tags: [bays]
+      summary: Per-bay audit log (admin)
+      description: |
+        Admin-only audit-log view of the `bay_events` table, newest first.
+        Every state mutation produced by the Pi (state changes, sensor
+        online/offline, auto check-in, conflicts, no-show) and every
+        reservation-side mutation (created, cancelled, completed,
+        plates updated) is recorded as a row here.
+
+        Pagination is keyset-based: pass the previous page's last
+        `created_at` value as `before` to fetch the next page. The query
+        is served by the `(bay_id, created_at)` index on `bay_events`.
+      parameters:
+        - $ref: "#/components/parameters/BayCode"
+        - in: query
+          name: limit
+          required: false
+          description: Page size, clamped to `[1, 200]`. Default 50.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: before
+          required: false
+          description: |
+            ISO-8601 datetime cursor — return events strictly older than
+            this. Pass the previous page's last `created_at` to paginate.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: OK (newest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BayEventOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Invalid query parameter (e.g. malformed `before`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/users/me/plates:
+    get:
+      tags: [plates]
+      summary: List the current user's bound plates
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PlateOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [plates]
+      summary: Bind a plate to the current user
+      description: |
+        Plates are normalised (uppercase, no spaces). On success, the updated
+        bound-plate list is republished over MQTT
+        (`cloud/bay/<code>/reservation` with `action: "update_plates"`) for
+        every active reservation belonging to this user.
+
+        Limit: 5 plates per user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlateAddRequest" }
+      responses:
+        "201":
+          description: Plate bound.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlateOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: Invalid payload, > 5 plates, or duplicate plate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/users/me/plates/{plate}:
+    delete:
+      tags: [plates]
+      summary: Remove a bound plate
+      description: |
+        Re-publishes the updated bound-plate list to the Pi for any active
+        reservation belonging to this user.
+      parameters:
+        - in: path
+          name: plate
+          required: true
+          schema: { type: string, example: "ABC123" }
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/reservations:
+    post:
+      tags: [reservations]
+      summary: Reserve a bay
+      description: |
+        Booking rules:
+
+        - `0 < expected_arrival_time - now() ≤ 60 min` (else **422**).
+        - User must have ≥ 1 bound plate (auto check-in needs plates).
+        - User must not be banned (> 2 breaches in current month → **403**).
+        - Bay must be `AVAILABLE` (mirror); `OCCUPIED` / `CONFLICT` → **409**,
+          `OFFLINE` → **503**. Concurrent races on `RESERVED*` are caught by
+          a partial unique index and translated to **409**.
+
+        On success, publishes `cloud/bay/<code>/reservation` with
+        `action: "create"` and the user's bound-plate list so the Pi can
+        match LPR results.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReservationCreateRequest" }
+      responses:
+        "201":
+          description: Reservation created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReservationOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: User is banned (> 2 breaches this month).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: Bay not bookable, or race-condition unique violation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: Booking window violation, no bound plates, or invalid payload.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "503":
+          description: Bay is OFFLINE.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+    get:
+      tags: [reservations]
+      summary: List the current user's reservations
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ReservationOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/reservations/{id}:
+    get:
+      tags: [reservations]
+      summary: Reservation detail
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReservationOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Not found, or owned by a different non-admin user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/reservations/{id}/cancel:
+    post:
+      tags: [reservations]
+      summary: Cancel a reservation
+      description: |
+        Idempotent — repeated calls on an already-cancelled reservation
+        return 200 with the existing record.
+
+        Classified as a `late_cancel` breach when called less than
+        15 minutes before `expected_arrival_time`. Only valid from
+        `ACTIVE` or `PENDING_CHECK_IN`; other non-cancellable states
+        (`CHECKED_IN`, `COMPLETED`, `EXPIRED_NO_SHOW`, `IN_CONFLICT`)
+        return 409.
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+      responses:
+        "200":
+          description: Cancelled (or no-op on already-cancelled).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReservationOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Reservation is in a non-cancellable state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/reservations/{id}/check-in:
+    post:
+      tags: [reservations]
+      summary: Fallback check-in (QR or manual)
+      description: |
+        Used **only** when LPR did not auto-resolve. Auto check-in is
+        server-driven via the Pi `auto_check_in` event and never reaches
+        this endpoint.
+
+        Accepted from `PENDING_CHECK_IN`, and from `IN_CONFLICT` when the
+        open `conflicts` row has `kind='weak'` (a late manual check-in
+        clears the alarm and resolves the conflict with
+        `user_arrived_and_checked_in`; the prior `weak_conflict` breach
+        is **not** retracted).
+
+        Persists `check_in_mechanism = body.source` (`qr` or `manual`);
+        `check_in_recognised_plate` stays NULL (DB invariant I14).
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReservationCheckInRequest" }
+      responses:
+        "200":
+          description: Checked in (or no-op on already-checked-in).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReservationOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Conflict — common codes:
+              * `vehicle_not_detected_yet` — reservation is still `ACTIVE`
+                (vehicle sensor has not fired). Dashboard auto-retries on
+                the next `reservation.pending_check_in` WS event.
+              * Strong `IN_CONFLICT` (cannot be cleared by user).
+              * Other non-checkable states (`COMPLETED`, `EXPIRED_NO_SHOW`,
+                `CANCELLED*`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: |
+            Invalid payload, or `bay_code` does not match the reservation's
+            bay (input validation, not state conflict).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/users/me/breaches:
+    get:
+      tags: [breaches]
+      summary: Current user's breach list (this month) + ban status
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BreachListResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/conflicts:
+    get:
+      tags: [conflicts]
+      summary: List unresolved conflicts (admin)
+      description: Admin only. Returns conflicts whose `resolved_at` is NULL.
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConflictOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/conflicts/{id}/evidence:
+    get:
+      tags: [conflicts]
+      summary: Stream the captured evidence image (admin)
+      description: |
+        Returns the JPEG body. **404** once the image has been purged
+        (`image_purge_at < now()`, default 30 days).
+      parameters:
+        - $ref: "#/components/parameters/ConflictId"
+      responses:
+        "200":
+          description: JPEG image.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Conflict not found, or evidence already purged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/conflicts/{id}/resolve:
+    post:
+      tags: [conflicts]
+      summary: Mark a conflict resolved (admin)
+      parameters:
+        - $ref: "#/components/parameters/ConflictId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConflictResolveRequest" }
+      responses:
+        "200":
+          description: Resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConflictOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Invalid resolution value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/internal/conflicts/evidence:
+    post:
+      tags: [internal]
+      summary: Pi → backend evidence-image upload (shared-token auth)
+      description: |
+        Multipart upload of the JPEG captured by the Pi when raising a
+        `conflict_strong`. Authenticated by a shared bearer token
+        (`Authorization: Bearer <evidence_upload_token>`), **not** a user
+        JWT — the Pi has no user account. Idempotent on `source_event_id`.
+      security:
+        - EvidenceUploadToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [bay_code, source_event_id, image]
+              properties:
+                bay_code:
+                  type: string
+                  example: "B01"
+                source_event_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the `conflict_strong` MQTT event this image belongs to.
+                recognised_plate:
+                  type: string
+                  nullable: true
+                  example: "ABC123"
+                image:
+                  type: string
+                  format: binary
+                  description: JPEG image bytes.
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conflict_id: { type: string, format: uuid }
+                  stored_at: { type: string, format: date-time }
+        "401":
+          description: Missing or invalid evidence-upload token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: Invalid multipart payload.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT obtained from `POST /api/v1/auth/login`. Passed as
+        `Authorization: Bearer <token>`.
+    EvidenceUploadToken:
+      type: http
+      scheme: bearer
+      description: |
+        Shared bearer token used by the Raspberry Pi to upload conflict
+        evidence images. Configured server-side via `EVIDENCE_UPLOAD_TOKEN`.
+
+  parameters:
+    BayCode:
+      in: path
+      name: code
+      required: true
+      schema: { type: string, example: "B01" }
+    ReservationId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    ConflictId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: Authenticated, but not authorised (e.g. non-admin on admin route).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: validation_error
+            message:
+              type: string
+              example: invalid reservation payload
+            details:
+              type: object
+              additionalProperties: true
+
+    ReadinessResponse:
+      type: object
+      properties:
+        db: { type: boolean }
+        mqtt:
+          oneOf:
+            - { type: boolean }
+            - { type: string, enum: [disabled] }
+
+    # ---- auth ----------------------------------------------------------------
+    RegisterRequest:
+      type: object
+      required: [email, name, password]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        password: { type: string, minLength: 8, maxLength: 128, format: password }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1, maxLength: 128, format: password }
+
+    UserOut:
+      type: object
+      required: [id, email, name, role]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role:
+          type: string
+          enum: [user, admin]
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, user]
+      properties:
+        access_token: { type: string }
+        token_type:   { type: string, default: Bearer }
+        user: { $ref: "#/components/schemas/UserOut" }
+
+    # ---- bays ----------------------------------------------------------------
+    BayState:
+      type: string
+      enum:
+        - available
+        - reserved
+        - occupied
+        - pending_check_in
+        - reserved_checked_in
+        - conflict
+      description: |
+        Mirrors the Pi-owned bay state. `OFFLINE` is reflected via the
+        absence of a recent heartbeat; the `parking_bays` mirror does
+        not store an explicit offline state.
+
+    BayOut:
+      type: object
+      required: [code, label, state]
+      properties:
+        code: { type: string, example: "B01" }
+        label: { type: string, example: "Bay 1" }
+        state: { $ref: "#/components/schemas/BayState" }
+        last_distance_cm:
+          type: number
+          format: double
+          nullable: true
+          description: Most recent ultrasonic reading from the Pi (cm).
+        sensor_last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        current_reservation_id:
+          type: string
+          format: uuid
+          nullable: true
+        current_reservation_arrival:
+          type: string
+          format: date-time
+          nullable: true
+        check_in_grace_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    BayEventKind:
+      type: string
+      enum:
+        - state_changed
+        - sensor_online
+        - sensor_offline
+        - pending_check_in
+        - auto_check_in
+        - check_in_confirmed
+        - conflict_strong
+        - conflict_weak
+        - conflict_resolved
+        - no_show
+        - reservation_created
+        - reservation_cancelled
+        - reservation_completed
+        - plates_updated
+
+    BayEventOut:
+      type: object
+      required: [id, kind, payload, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Auto-incremented row ID.
+        kind: { $ref: "#/components/schemas/BayEventKind" }
+        from_state:
+          allOf:
+            - $ref: "#/components/schemas/BayState"
+          nullable: true
+          description: Present on `state_changed` rows; null otherwise.
+        to_state:
+          allOf:
+            - $ref: "#/components/schemas/BayState"
+          nullable: true
+        reservation_id:
+          type: string
+          format: uuid
+          nullable: true
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            Free-form per-event metadata — e.g. `{ "distance_cm": 12.5 }`
+            on `state_changed`, `{ "recognised_plate": "...",
+            "lpr_confidence": 0.92 }` on `auto_check_in` and
+            `conflict_strong`.
+        created_at:
+          type: string
+          format: date-time
+
+    # ---- plates --------------------------------------------------------------
+    PlateAddRequest:
+      type: object
+      required: [plate]
+      properties:
+        plate: { type: string, minLength: 1, maxLength: 16, example: "ABC123" }
+        label: { type: string, maxLength: 64, nullable: true, example: "Family car" }
+
+    PlateOut:
+      type: object
+      required: [id, plate, created_at]
+      properties:
+        id:    { type: string, format: uuid }
+        plate: { type: string, example: "ABC123" }
+        label: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    # ---- reservations --------------------------------------------------------
+    ReservationStatus:
+      type: string
+      enum:
+        - active
+        - pending_check_in
+        - checked_in
+        - completed
+        - cancelled
+        - cancelled_late
+        - expired_no_show
+        - in_conflict
+
+    CheckInMechanism:
+      type: string
+      enum: [auto_lpr, qr, manual]
+
+    ReservationCreateRequest:
+      type: object
+      required: [bay_code, expected_arrival_time]
+      properties:
+        bay_code:
+          type: string
+          minLength: 1
+          maxLength: 16
+          example: "B01"
+        expected_arrival_time:
+          type: string
+          format: date-time
+          description: Must satisfy `0 < expected - now() ≤ 60 min`.
+
+    ReservationCheckInRequest:
+      type: object
+      required: [bay_code, source]
+      properties:
+        bay_code: { type: string, minLength: 1, maxLength: 16 }
+        source:
+          type: string
+          enum: [qr, manual]
+
+    ReservationOut:
+      type: object
+      required: [id, bay_code, user_id, status, expected_arrival_time, booked_at]
+      properties:
+        id: { type: string, format: uuid }
+        bay_code: { type: string }
+        user_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/ReservationStatus" }
+        expected_arrival_time: { type: string, format: date-time }
+        booked_at: { type: string, format: date-time }
+        check_in_grace_expires_at: { type: string, format: date-time, nullable: true }
+        checked_in_at: { type: string, format: date-time, nullable: true }
+        check_in_mechanism:
+          allOf:
+            - $ref: "#/components/schemas/CheckInMechanism"
+          nullable: true
+        cancelled_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+
+    # ---- breaches ------------------------------------------------------------
+    BreachKind:
+      type: string
+      enum: [late_cancel, no_show, weak_conflict]
+      description: |
+        Strong-evidence conflicts are deliberately **not** a user breach
+        (proposal §5.5) — the holder is treated as a victim of misuse.
+
+    BreachOut:
+      type: object
+      required: [id, kind, occurred_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/BreachKind" }
+        reservation_id: { type: string, format: uuid, nullable: true }
+        occurred_at: { type: string, format: date-time }
+
+    BreachListResponse:
+      type: object
+      required: [breaches, monthly_count, threshold, is_banned]
+      properties:
+        breaches:
+          type: array
+          items: { $ref: "#/components/schemas/BreachOut" }
+        monthly_count: { type: integer, example: 1 }
+        threshold:
+          type: integer
+          description: |
+            Maximum tolerated breaches per rolling month. `is_banned` flips
+            true once `monthly_count > threshold` (default threshold = 2).
+          example: 2
+        is_banned: { type: boolean }
+
+    # ---- conflicts -----------------------------------------------------------
+    ConflictKind:
+      type: string
+      enum: [strong, weak]
+      description: |
+        `strong` — LPR plate ∉ user's bound plates (facility incident, no
+        user breach). `weak` — LPR did not auto-resolve and the check-in
+        grace expired (user breach `weak_conflict`).
+
+    ConflictResolution:
+      type: string
+      enum: [vehicle_left, admin_resolved, user_arrived_and_checked_in]
+      description: |
+        `user_arrived_and_checked_in` is only valid for `kind='weak'` and
+        is set automatically by the fallback check-in path.
+
+    ConflictOut:
+      type: object
+      required: [id, bay_code, kind, detected_at]
+      properties:
+        id: { type: string, format: uuid }
+        bay_code: { type: string }
+        kind: { $ref: "#/components/schemas/ConflictKind" }
+        reservation_id: { type: string, format: uuid, nullable: true }
+        recognised_plate:
+          type: string
+          nullable: true
+          description: Present on `kind='strong'` (and absent on `weak`).
+        lpr_confidence:
+          type: number
+          format: double
+          nullable: true
+        evidence_image_url:
+          type: string
+          nullable: true
+          description: Server-side path to the captured JPEG (strong only).
+        image_purge_at:
+          type: string
+          format: date-time
+          nullable: true
+        detected_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        resolution:
+          allOf:
+            - $ref: "#/components/schemas/ConflictResolution"
+          nullable: true
+
+    ConflictResolveRequest:
+      type: object
+      required: [resolution]
+      properties:
+        resolution:
+          type: string
+          enum: [vehicle_left, admin_resolved, user_arrived_and_checked_in]
