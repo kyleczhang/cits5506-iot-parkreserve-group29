@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Coverage / test artefacts
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Docker volumes
+docker/data/
+
+# Build / distribution
+dist/
+build/
+
+# Type checking
+.mypy_cache/
+
+# Flask instance folder
+instance/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
