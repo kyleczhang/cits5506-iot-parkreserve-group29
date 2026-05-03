@@ -236,19 +236,46 @@ channels:
       message:
         $ref: "#/components/messages/WsConflict"
 
-  # ============================================================== Socket.IO (client → server)
-  subscribe:
+  payment.deposit_released:
     description: |
-      Client → server. Optional channel-filter request. With no
-      `bay_codes` (or an empty list), the client receives updates for
-      all bays — the default behaviour.
+      Server → client. The `pre_auth` deposit hold has been released —
+      either after a clean cancel, after the reservation completed, or
+      as the remainder following a partial penalty capture. `reason`
+      identifies which path triggered the release (e.g. `clean_cancel`,
+      `completed`, `post_penalty_remainder`).
     bindings:
       ws:
         bindingVersion: "0.1.0"
-    subscribe:
-      operationId: wsSubscribe
+    publish:
+      operationId: wsPaymentDepositReleased
       message:
-        $ref: "#/components/messages/WsSubscribeRequest"
+        $ref: "#/components/messages/WsPaymentDepositReleased"
+
+  payment.refunded:
+    description: |
+      Server → client. The full deposit was refunded because a
+      strong-evidence conflict was raised against the holder's
+      reservation — they are treated as a victim (proposal §5.5).
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsPaymentRefunded
+      message:
+        $ref: "#/components/messages/WsPaymentRefunded"
+
+  payment.penalty_captured:
+    description: |
+      Server → client. A `penalty_capture` row was inserted against the
+      reservation's deposit. `penalty_kind` is one of `late_cancel`,
+      `no_show`, `weak_conflict`.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsPaymentPenaltyCaptured
+      message:
+        $ref: "#/components/messages/WsPaymentPenaltyCaptured"
 
 # ---------------------------------------------------------------------------
 # Components
@@ -349,12 +376,23 @@ components:
       payload:
         $ref: "#/components/schemas/WsConflictPayload"
 
-    # -------- Socket.IO message envelopes (client → server)
-    WsSubscribeRequest:
-      name: WsSubscribeRequest
-      title: "`subscribe` payload"
+    WsPaymentDepositReleased:
+      name: WsPaymentDepositReleased
+      title: "`payment.deposit_released` payload"
       payload:
-        $ref: "#/components/schemas/WsSubscribePayload"
+        $ref: "#/components/schemas/WsPaymentReleasePayload"
+
+    WsPaymentRefunded:
+      name: WsPaymentRefunded
+      title: "`payment.refunded` payload"
+      payload:
+        $ref: "#/components/schemas/WsPaymentReleasePayload"
+
+    WsPaymentPenaltyCaptured:
+      name: WsPaymentPenaltyCaptured
+      title: "`payment.penalty_captured` payload"
+      payload:
+        $ref: "#/components/schemas/WsPaymentPenaltyPayload"
 
   # ----------------------------------------------------------------- Schemas
   schemas:
@@ -634,14 +672,29 @@ components:
           enum: [vehicle_left, admin_resolved, user_arrived_and_checked_in]
           nullable: true
 
-    WsSubscribePayload:
+    WsPaymentReleasePayload:
       type: object
-      additionalProperties: false
+      required: [reservation_id, user_id, amount_cents, reason]
       properties:
-        bay_codes:
-          type: array
+        reservation_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        amount_cents: { type: integer }
+        reason:
+          type: string
           description: |
-            Optional filter — only emit updates for these bay codes. If
-            omitted or empty, the client receives all bays (default).
-          items:
-            type: string
+            Free-form reason tag. For `payment.refunded` the backend
+            currently emits `strong_conflict`. For
+            `payment.deposit_released` the value identifies the path
+            (e.g. `clean_cancel`, `completed`,
+            `post_penalty_remainder`).
+
+    WsPaymentPenaltyPayload:
+      type: object
+      required: [reservation_id, user_id, penalty_kind, amount_cents]
+      properties:
+        reservation_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        penalty_kind:
+          type: string
+          enum: [late_cancel, no_show, weak_conflict]
+        amount_cents: { type: integer }
