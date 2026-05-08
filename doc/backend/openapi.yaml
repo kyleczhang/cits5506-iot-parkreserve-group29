@@ -21,7 +21,7 @@ info:
     name: ParkReserve Group 29 (CITS5506)
 
 servers:
-  - url: http://localhost:5000
+  - url: http://localhost:8000
     description: Local development (`make dev`)
   - url: https://{host}
     description: Production
@@ -69,11 +69,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: Readiness probe (DB + MQTT)
+      summary: Readiness probe (DB)
       description: |
-        Returns 200 when the database is reachable and the MQTT client is
-        connected (or disabled). Returns 503 if either the DB check fails
-        or the MQTT client is enabled but not connected.
+        Returns 200 when the database is reachable. Returns 503 when the
+        database check fails.
+
+        MQTT is intentionally not part of readiness: outbound publish is
+        best-effort, and inbound MQTT liveness is managed separately by
+        process supervision and logs rather than this HTTP endpoint.
       security: []
       responses:
         "200":
@@ -306,13 +309,13 @@ paths:
         - `0 < expected_arrival_time - now() ≤ 60 min` (else **422**).
         - User must have ≥ 1 bound plate (auto check-in needs plates).
         - Bay must be `AVAILABLE` (mirror); `OCCUPIED` / `CONFLICT` → **409**,
-          `OFFLINE` → **503**. Concurrent races on `RESERVED*` are caught by
-          a partial unique index and translated to **409**.
+          `OFFLINE` → **409** (`bay_offline`). Concurrent races on `RESERVED*`
+          are caught by a partial unique index and translated to **409**.
         - The body must carry `card` (mock card details). The backend looks
           up the matching row in the `mock_cards` table, debits the deposit
           (`DEPOSIT_CENTS`, default $10) as a `pre_auth` payment, and only
-          then commits the reservation. Insufficient funds or unknown card
-          → **422**.
+          then commits the reservation. Unknown card, expired card, or
+          insufficient funds → **402**.
 
         On success, publishes `cloud/bay/<code>/reservation` with
         `action: "create"` and the user's bound-plate list so the Pi can
@@ -336,16 +339,19 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
-        "422":
+        "402":
           description: |
-            Booking window violation, no bound plates, invalid card details,
-            unknown mock card, insufficient mock-card balance, or otherwise
-            invalid payload.
+            Payment pre-authorisation failed. Common codes:
+              * `card_invalid`
+              * `card_expired`
+              * `insufficient_funds`
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
-        "503":
-          description: Bay is OFFLINE.
+        "422":
+          description: |
+            Booking window violation, no bound plates, malformed card
+            payload, or otherwise invalid payload.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -409,6 +415,8 @@ paths:
               schema: { $ref: "#/components/schemas/ReservationOut" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -449,6 +457,8 @@ paths:
               schema: { $ref: "#/components/schemas/ReservationOut" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -708,12 +718,9 @@ components:
 
     ReadinessResponse:
       type: object
+      required: [db]
       properties:
         db: { type: boolean }
-        mqtt:
-          oneOf:
-            - { type: boolean }
-            - { type: string, enum: [disabled] }
 
     # ---- auth ----------------------------------------------------------------
     RegisterRequest:
@@ -760,10 +767,10 @@ components:
         - pending_check_in
         - reserved_checked_in
         - conflict
+        - offline
       description: |
-        Mirrors the Pi-owned bay state. `OFFLINE` is reflected via the
-        absence of a recent heartbeat; the `parking_bays` mirror does
-        not store an explicit offline state.
+        Mirrors the Pi-owned bay state, including the explicit `offline`
+        state written when the Pi reports `sensor_offline`.
 
     BayOut:
       type: object
