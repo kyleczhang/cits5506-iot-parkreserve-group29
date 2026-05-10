@@ -10,8 +10,18 @@ function ParkingGrid({
 
   const reservationCost = 10;
 
-  // Selected spot for modal
-  const [selectedSpot, setSelectedSpot] = useState(null);
+  // Time formatter
+  const getCurrentTime = () => {
+
+    return new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+
+  };
+
+  // Selected modal spot ID
+  const [selectedSpotId, setSelectedSpotId] = useState(null);
 
   // Parking spots
   const [spots, setSpots] = useState([
@@ -19,6 +29,11 @@ function ParkingGrid({
     { id: 2, status: "occupied" },
     { id: 3, status: "reserved" }
   ]);
+
+  // Get latest selected spot
+  const selectedSpot = spots.find(
+    (spot) => spot.id === selectedSpotId
+  );
 
   // Reserve spot
   const reserveSpot = (id) => {
@@ -39,17 +54,12 @@ function ParkingGrid({
 
     setSpots(updatedSpots);
 
-    // Update selected modal spot
-    setSelectedSpot(
-      updatedSpots.find((spot) => spot.id === id)
-    );
-
     // Deduct balance
     setBalance(balance - reservationCost);
 
-    // Update activity
+    // Update history
     setHistory((prevHistory) => [
-      `🟡 Reserved Spot ${id}`,
+      `🟡 Reserved Spot ${id} - ${getCurrentTime()}`,
       ...prevHistory
     ]);
   };
@@ -68,17 +78,12 @@ function ParkingGrid({
 
     setSpots(updatedSpots);
 
-    // Update selected modal spot
-    setSelectedSpot(
-      updatedSpots.find((spot) => spot.id === id)
-    );
-
     // Refund balance
     setBalance(balance + reservationCost);
 
-    // Update activity
+    // Update history
     setHistory((prevHistory) => [
-      `❌ Cancelled Spot ${id}`,
+      `❌ Cancelled Spot ${id} - ${getCurrentTime()}`,
       ...prevHistory
     ]);
   };
@@ -98,24 +103,26 @@ function ParkingGrid({
         {spots.map((spot) => (
           <div
             key={spot.id}
-            onClick={() => setSelectedSpot(spot)}
+            onClick={() => setSelectedSpotId(spot.id)}
             style={{ cursor: "pointer" }}
           >
+
             <SpotCard
               id={spot.id}
               status={spot.status}
               reserveSpot={reserveSpot}
               cancelReservation={cancelReservation}
             />
+
           </div>
         ))}
 
       </div>
 
-      {/* Spot Modal */}
+      {/* Modal */}
       <SpotModal
         spot={selectedSpot}
-        onClose={() => setSelectedSpot(null)}
+        onClose={() => setSelectedSpotId(null)}
         reserveSpot={reserveSpot}
         cancelReservation={cancelReservation}
       />
