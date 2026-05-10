@@ -1,4 +1,5 @@
 import SpotCard from "./SpotCard";
+import SpotModal from "./SpotModal";
 import { useState } from "react";
 
 function ParkingGrid({
@@ -9,6 +10,10 @@ function ParkingGrid({
 
   const reservationCost = 10;
 
+  // Selected spot for modal
+  const [selectedSpot, setSelectedSpot] = useState(null);
+
+  // Parking spots
   const [spots, setSpots] = useState([
     { id: 1, status: "available" },
     { id: 2, status: "occupied" },
@@ -34,6 +39,11 @@ function ParkingGrid({
 
     setSpots(updatedSpots);
 
+    // Update selected modal spot
+    setSelectedSpot(
+      updatedSpots.find((spot) => spot.id === id)
+    );
+
     // Deduct balance
     setBalance(balance - reservationCost);
 
@@ -58,6 +68,11 @@ function ParkingGrid({
 
     setSpots(updatedSpots);
 
+    // Update selected modal spot
+    setSelectedSpot(
+      updatedSpots.find((spot) => spot.id === id)
+    );
+
     // Refund balance
     setBalance(balance + reservationCost);
 
@@ -69,27 +84,42 @@ function ParkingGrid({
   };
 
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "center",
-        flexWrap: "wrap",
-        gap: "30px",
-        marginTop: "30px"
-      }}
-    >
+    <>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          flexWrap: "wrap",
+          gap: "30px",
+          marginTop: "30px"
+        }}
+      >
 
-      {spots.map((spot) => (
-        <SpotCard
-          key={spot.id}
-          id={spot.id}
-          status={spot.status}
-          reserveSpot={reserveSpot}
-          cancelReservation={cancelReservation}
-        />
-      ))}
+        {spots.map((spot) => (
+          <div
+            key={spot.id}
+            onClick={() => setSelectedSpot(spot)}
+            style={{ cursor: "pointer" }}
+          >
+            <SpotCard
+              id={spot.id}
+              status={spot.status}
+              reserveSpot={reserveSpot}
+              cancelReservation={cancelReservation}
+            />
+          </div>
+        ))}
 
-    </div>
+      </div>
+
+      {/* Spot Modal */}
+      <SpotModal
+        spot={selectedSpot}
+        onClose={() => setSelectedSpot(null)}
+        reserveSpot={reserveSpot}
+        cancelReservation={cancelReservation}
+      />
+    </>
   );
 }
 
