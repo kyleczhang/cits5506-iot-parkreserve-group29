@@ -1,6 +1,6 @@
 import SpotCard from "./SpotCard";
 import SpotModal from "./SpotModal";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 function ParkingGrid({
   balance,
@@ -10,26 +10,26 @@ function ParkingGrid({
 
   const reservationCost = 10;
 
-  // Search + filter state
+  // Search + filter
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
-  // Selected modal spot ID
+  // Modal state
   const [selectedSpotId, setSelectedSpotId] = useState(null);
 
   // Parking spots
   const [spots, setSpots] = useState([
-    { id: 1, status: "available" },
-    { id: 2, status: "occupied" },
-    { id: 3, status: "reserved" }
+    { id: 1, status: "available", timer: 0 },
+    { id: 2, status: "occupied", timer: 0 },
+    { id: 3, status: "reserved", timer: 30 }
   ]);
 
-  // Get latest selected spot
+  // Selected spot
   const selectedSpot = spots.find(
     (spot) => spot.id === selectedSpotId
   );
 
-  // Time formatter
+  // Current time
   const getCurrentTime = () => {
 
     return new Date().toLocaleTimeString([], {
@@ -38,6 +38,76 @@ function ParkingGrid({
     });
 
   };
+
+  // Reservation countdown
+   // Reservation countdown
+  useEffect(() => {
+
+    const interval = setInterval(() => {
+
+      setSpots((prevSpots) => {
+
+        return prevSpots.map((spot) => {
+
+          // Reserved spots countdown
+          if (spot.status === "reserved") {
+
+            // Continue countdown
+            if (spot.timer > 1) {
+
+              return {
+                ...spot,
+                timer: spot.timer - 1
+              };
+
+            }
+
+            // Expire reservation ONCE
+            if (spot.timer === 1) {
+
+              // Add expiry activity ONLY once
+              setHistory((prevHistory) => {
+
+                const alreadyExists = prevHistory.some(
+                  (item) =>
+                    item.includes(
+                      `Reservation expired for Spot ${spot.id}`
+                    )
+                );
+
+                if (alreadyExists) {
+                  return prevHistory;
+                }
+
+                return [
+                  `⌛ Reservation expired for Spot ${spot.id} - ${getCurrentTime()}`,
+                  ...prevHistory
+                ];
+
+              });
+
+              // Release spot
+              return {
+                ...spot,
+                status: "available",
+                timer: 0
+              };
+
+            }
+
+          }
+
+          return spot;
+
+        });
+
+      });
+
+    }, 1000);
+
+    return () => clearInterval(interval);
+
+  }, [setBalance, setHistory]);
 
   // Reserve spot
   const reserveSpot = (id) => {
@@ -49,19 +119,31 @@ function ParkingGrid({
 
     const updatedSpots = spots.map((spot) => {
 
-      if (spot.id === id && spot.status === "available") {
-        return { ...spot, status: "reserved" };
+      if (
+        spot.id === id &&
+        spot.status === "available"
+      ) {
+
+        return {
+          ...spot,
+          status: "reserved",
+          timer: 30
+        };
+
       }
 
       return spot;
+
     });
 
     setSpots(updatedSpots);
 
     // Deduct balance
-    setBalance(balance - reservationCost);
+    setBalance((prevBalance) =>
+      prevBalance - reservationCost
+    );
 
-    // Update history
+    // Add history
     setHistory((prevHistory) => [
       `🟡 Reserved Spot ${id} - ${getCurrentTime()}`,
       ...prevHistory
@@ -73,33 +155,46 @@ function ParkingGrid({
 
     const updatedSpots = spots.map((spot) => {
 
-      if (spot.id === id && spot.status === "reserved") {
-        return { ...spot, status: "available" };
+      if (
+        spot.id === id &&
+        spot.status === "reserved"
+      ) {
+
+        return {
+          ...spot,
+          status: "available",
+          timer: 0
+        };
+
       }
 
       return spot;
+
     });
 
     setSpots(updatedSpots);
 
     // Refund balance
-    setBalance(balance + reservationCost);
+    setBalance((prevBalance) =>
+      prevBalance + reservationCost
+    );
 
-    // Update history
+    // Add history
     setHistory((prevHistory) => [
       `❌ Cancelled Spot ${id} - ${getCurrentTime()}`,
       ...prevHistory
     ]);
   };
 
-  // Filtered spots
+  // Filter spots
   const filteredSpots = spots.filter((spot) => {
 
     const matchesSearch =
       spot.id.toString().includes(search);
 
     const matchesFilter =
-      filter === "all" || spot.status === filter;
+      filter === "all" ||
+      spot.status === filter;
 
     return matchesSearch && matchesFilter;
 
@@ -124,7 +219,8 @@ function ParkingGrid({
     padding: "15px 20px",
     borderRadius: "10px",
     boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
-    fontWeight: "bold"
+    fontWeight: "bold",
+    minWidth: "140px"
   };
 
   return (
@@ -216,6 +312,7 @@ function ParkingGrid({
             <SpotCard
               id={spot.id}
               status={spot.status}
+              timer={spot.timer}
               reserveSpot={reserveSpot}
               cancelReservation={cancelReservation}
             />
@@ -225,7 +322,7 @@ function ParkingGrid({
 
       </div>
 
-      {/* Spot Modal */}
+      {/* Modal */}
       <SpotModal
         spot={selectedSpot}
         onClose={() => setSelectedSpotId(null)}

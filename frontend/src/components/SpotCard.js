@@ -1,12 +1,14 @@
 function SpotCard({
   id,
   status,
+  timer,
   reserveSpot,
   cancelReservation
 }) {
 
-  // Card color
+  // Background color
   const getColor = () => {
+
     if (status === "available") return "green";
     if (status === "occupied") return "red";
     if (status === "reserved") return "yellow";
@@ -16,12 +18,20 @@ function SpotCard({
 
   // Text color
   const getTextColor = () => {
-    return status === "reserved" ? "black" : "white";
+
+    return status === "reserved"
+      ? "black"
+      : "white";
   };
 
-  // Format text
+  // Format status
   const formatStatus = () => {
-    return status.charAt(0).toUpperCase() + status.slice(1);
+
+    return (
+      status.charAt(0).toUpperCase() +
+      status.slice(1)
+    );
+
   };
 
   return (
@@ -42,39 +52,59 @@ function SpotCard({
 
       <p>{formatStatus()}</p>
 
+      {/* Timer */}
+      {
+        status === "reserved" &&
+        timer > 0 && (
+          <p style={{ marginTop: "10px" }}>
+            ⏳ {timer}s
+          </p>
+        )
+      }
+
       {/* Reserve Button */}
-      {status === "available" && (
-        <button
-          onClick={() => reserveSpot(id)}
-          style={{
-            marginTop: "10px",
-            padding: "8px 14px",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-            fontWeight: "bold"
-          }}
-        >
-          Reserve
-        </button>
-      )}
+      {
+        status === "available" && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              reserveSpot(id);
+            }}
+            style={{
+              marginTop: "10px",
+              padding: "8px 14px",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontWeight: "bold"
+            }}
+          >
+            Reserve
+          </button>
+        )
+      }
 
       {/* Cancel Button */}
-      {status === "reserved" && (
-        <button
-          onClick={() => cancelReservation(id)}
-          style={{
-            marginTop: "10px",
-            padding: "8px 14px",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-            fontWeight: "bold"
-          }}
-        >
-          Cancel
-        </button>
-      )}
+      {
+        status === "reserved" && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              cancelReservation(id);
+            }}
+            style={{
+              marginTop: "10px",
+              padding: "8px 14px",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontWeight: "bold"
+            }}
+          >
+            Cancel
+          </button>
+        )
+      }
 
     </div>
   );
