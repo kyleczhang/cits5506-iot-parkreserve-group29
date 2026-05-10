@@ -1,7 +1,7 @@
 import SpotCard from "./SpotCard";
 import { useState } from "react";
 
-function ParkingGrid() {
+function ParkingGrid({ balance, setBalance }) {
 
   const [spots, setSpots] = useState([
     { id: 1, status: "available" },
@@ -9,35 +9,48 @@ function ParkingGrid() {
     { id: 3, status: "reserved" }
   ]);
 
+  const reservationCost = 10;
+
   // Reserve parking spot
   const reserveSpot = (id) => {
 
-    const updatedSpots = spots.map((spot) => {
+  // Prevent reservation if insufficient balance
+  if (balance < reservationCost) {
+    alert("Not enough balance!");
+    return;
+  }
 
-      if (spot.id === id && spot.status === "available") {
-        return { ...spot, status: "reserved" };
-      }
+  const updatedSpots = spots.map((spot) => {
 
-      return spot;
-    });
+    if (spot.id === id && spot.status === "available") {
+      return { ...spot, status: "reserved" };
+    }
 
-    setSpots(updatedSpots);
-  };
+    return spot;
+  });
 
-  // Cancel reservation
+  setSpots(updatedSpots);
+
+  // Deduct balance
+  setBalance(balance - reservationCost);
+};
+
   const cancelReservation = (id) => {
 
-    const updatedSpots = spots.map((spot) => {
+  const updatedSpots = spots.map((spot) => {
 
-      if (spot.id === id && spot.status === "reserved") {
-        return { ...spot, status: "available" };
-      }
+    if (spot.id === id && spot.status === "reserved") {
+      return { ...spot, status: "available" };
+    }
 
-      return spot;
-    });
+    return spot;
+  });
 
-    setSpots(updatedSpots);
-  };
+  setSpots(updatedSpots);
+
+  // Refund credits
+  setBalance(balance + reservationCost);
+};
 
   return (
     <div

@@ -52,6 +52,10 @@ function Dashboard() {
             Balance: ${balance}
           </h3>
 
+          <p style={{ color: "gray" }}>
+          Reservation Cost: $10
+          </p>
+          
           <input
             type="number"
             placeholder="Enter amount"
@@ -93,7 +97,10 @@ function Dashboard() {
         </div>
 
         {/* Parking Grid */}
-        <ParkingGrid />
+        <ParkingGrid
+          balance={balance}
+          setBalance={setBalance}
+        />
 
       </div>
     </>
