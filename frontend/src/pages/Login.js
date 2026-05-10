@@ -8,6 +8,9 @@ function Login() {
     navigate("/dashboard");
   };
 
+  <button onClick={handleLogin}>
+  Login
+</button>
   return (
     <div
       style={{
