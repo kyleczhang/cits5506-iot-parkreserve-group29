@@ -21,7 +21,7 @@ info:
     name: ParkReserve Group 29 (CITS5506)
 
 servers:
-  - url: http://localhost:5000
+  - url: http://localhost:8000
     description: Local development (`make dev`)
   - url: https://{host}
     description: Production
@@ -39,9 +39,9 @@ tags:
   - name: plates
     description: Bind / unbind LPR plates against the current user.
   - name: reservations
-    description: Booking, cancel, fallback check-in.
-  - name: breaches
-    description: Current-month breach list and ban status for the current user.
+    description: Booking (with mock-card pre-auth deposit), cancel, fallback check-in.
+  - name: payments
+    description: Read-only mock-payment ledger for the current user (pre-auth, release, refund, penalty captures).
   - name: conflicts
     description: Admin view of unresolved facility conflicts and resolution.
   - name: internal
@@ -69,11 +69,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: Readiness probe (DB + MQTT)
+      summary: Readiness probe (DB)
       description: |
-        Returns 200 when the database is reachable and the MQTT client is
-        connected (or disabled). Returns 503 if either the DB check fails
-        or the MQTT client is enabled but not connected.
+        Returns 200 when the database is reachable. Returns 503 when the
+        database check fails.
+
+        MQTT is intentionally not part of readiness: outbound publish is
+        best-effort, and inbound MQTT liveness is managed separately by
+        process supervision and logs rather than this HTTP endpoint.
       security: []
       responses:
         "200":
@@ -305,14 +308,19 @@ paths:
 
         - `0 < expected_arrival_time - now() ≤ 60 min` (else **422**).
         - User must have ≥ 1 bound plate (auto check-in needs plates).
-        - User must not be banned (> 2 breaches in current month → **403**).
         - Bay must be `AVAILABLE` (mirror); `OCCUPIED` / `CONFLICT` → **409**,
-          `OFFLINE` → **503**. Concurrent races on `RESERVED*` are caught by
-          a partial unique index and translated to **409**.
+          `OFFLINE` → **409** (`bay_offline`). Concurrent races on `RESERVED*`
+          are caught by a partial unique index and translated to **409**.
+        - The body must carry `card` (mock card details). The backend looks
+          up the matching row in the `mock_cards` table, debits the deposit
+          (`DEPOSIT_CENTS`, default $10) as a `pre_auth` payment, and only
+          then commits the reservation. Unknown card, expired card, or
+          insufficient funds → **402**.
 
         On success, publishes `cloud/bay/<code>/reservation` with
         `action: "create"` and the user's bound-plate list so the Pi can
-        match LPR results.
+        match LPR results. The response includes a `payment.deposit_cents`
+        field so the dashboard can show the held amount.
       requestBody:
         required: true
         content:
@@ -326,23 +334,24 @@ paths:
               schema: { $ref: "#/components/schemas/ReservationOut" }
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: User is banned (> 2 breaches this month).
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "409":
           description: Bay not bookable, or race-condition unique violation.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
-        "422":
-          description: Booking window violation, no bound plates, or invalid payload.
+        "402":
+          description: |
+            Payment pre-authorisation failed. Common codes:
+              * `card_invalid`
+              * `card_expired`
+              * `insufficient_funds`
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
-        "503":
-          description: Bay is OFFLINE.
+        "422":
+          description: |
+            Booking window violation, no bound plates, malformed card
+            payload, or otherwise invalid payload.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -389,11 +398,13 @@ paths:
         Idempotent — repeated calls on an already-cancelled reservation
         return 200 with the existing record.
 
-        Classified as a `late_cancel` breach when called less than
-        15 minutes before `expected_arrival_time`. Only valid from
-        `ACTIVE` or `PENDING_CHECK_IN`; other non-cancellable states
-        (`CHECKED_IN`, `COMPLETED`, `EXPIRED_NO_SHOW`, `IN_CONFLICT`)
-        return 409.
+        Classified as a `late_cancel` when called less than 15 minutes
+        before `expected_arrival_time` — the reservation transitions to
+        `CANCELLED_LATE` and a `penalty_capture` payment row is inserted
+        against the held deposit (no breach/ban accounting). A clean
+        cancel releases the deposit instead. Only valid from `ACTIVE` or
+        `PENDING_CHECK_IN`; other non-cancellable states (`CHECKED_IN`,
+        `COMPLETED`, `EXPIRED_NO_SHOW`, `IN_CONFLICT`) return 409.
       parameters:
         - $ref: "#/components/parameters/ReservationId"
       responses:
@@ -404,6 +415,8 @@ paths:
               schema: { $ref: "#/components/schemas/ReservationOut" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -424,8 +437,8 @@ paths:
         Accepted from `PENDING_CHECK_IN`, and from `IN_CONFLICT` when the
         open `conflicts` row has `kind='weak'` (a late manual check-in
         clears the alarm and resolves the conflict with
-        `user_arrived_and_checked_in`; the prior `weak_conflict` breach
-        is **not** retracted).
+        `user_arrived_and_checked_in`; the prior `weak_conflict` penalty
+        capture is **not** refunded).
 
         Persists `check_in_mechanism = body.source` (`qr` or `manual`);
         `check_in_recognised_plate` stays NULL (DB invariant I14).
@@ -444,6 +457,8 @@ paths:
               schema: { $ref: "#/components/schemas/ReservationOut" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -466,18 +481,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
-  /api/v1/users/me/breaches:
+  /api/v1/users/me/payments:
     get:
-      tags: [breaches]
-      summary: Current user's breach list (this month) + ban status
+      tags: [payments]
+      summary: List the current user's mock-payment ledger
+      description: |
+        Returns every `payments` row owned by the caller, newest first.
+        Rows include the original `pre_auth` (deposit hold at booking),
+        plus any subsequent `release` (clean cancel / completion remainder),
+        `refund` (issued on strong-conflict reservations), or
+        `penalty_capture` (`late_cancel`, `no_show`, `weak_conflict`).
       responses:
         "200":
           description: OK.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/BreachListResponse" }
+              schema: { $ref: "#/components/schemas/TransactionListResponse" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/users/me/payments/{payment_id}:
+    get:
+      tags: [payments]
+      summary: Mock-payment transaction detail
+      parameters:
+        - in: path
+          name: payment_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransactionOut" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/conflicts:
     get:
@@ -677,12 +718,9 @@ components:
 
     ReadinessResponse:
       type: object
+      required: [db]
       properties:
         db: { type: boolean }
-        mqtt:
-          oneOf:
-            - { type: boolean }
-            - { type: string, enum: [disabled] }
 
     # ---- auth ----------------------------------------------------------------
     RegisterRequest:
@@ -729,10 +767,10 @@ components:
         - pending_check_in
         - reserved_checked_in
         - conflict
+        - offline
       description: |
-        Mirrors the Pi-owned bay state. `OFFLINE` is reflected via the
-        absence of a recent heartbeat; the `parking_bays` mirror does
-        not store an explicit offline state.
+        Mirrors the Pi-owned bay state, including the explicit `offline`
+        state written when the Pi reports `sensor_offline`.
 
     BayOut:
       type: object
@@ -851,7 +889,7 @@ components:
 
     ReservationCreateRequest:
       type: object
-      required: [bay_code, expected_arrival_time]
+      required: [bay_code, expected_arrival_time, card]
       properties:
         bay_code:
           type: string
@@ -862,6 +900,40 @@ components:
           type: string
           format: date-time
           description: Must satisfy `0 < expected - now() ≤ 60 min`.
+        card:
+          $ref: "#/components/schemas/CardDetails"
+
+    CardDetails:
+      type: object
+      description: |
+        Mock-payment card sub-object (proposal §5.6). Validated against the
+        in-process `mock_cards` table — never reaches a real bank.
+      required: [number, cvv, expiry_month, expiry_year, holder_name]
+      properties:
+        number:
+          type: string
+          minLength: 13
+          maxLength: 19
+          pattern: "^[0-9]+$"
+          example: "4111111111111111"
+        cvv:
+          type: string
+          minLength: 3
+          maxLength: 4
+          pattern: "^[0-9]+$"
+          example: "123"
+        expiry_month:
+          type: integer
+          minimum: 1
+          maximum: 12
+        expiry_year:
+          type: integer
+          minimum: 2024
+          maximum: 2099
+        holder_name:
+          type: string
+          minLength: 1
+          maxLength: 120
 
     ReservationCheckInRequest:
       type: object
@@ -890,48 +962,79 @@ components:
           nullable: true
         cancelled_at: { type: string, format: date-time, nullable: true }
         completed_at: { type: string, format: date-time, nullable: true }
+        payment:
+          allOf:
+            - $ref: "#/components/schemas/ReservationDepositInfo"
+          nullable: true
+          description: |
+            Present on the `POST /reservations` 201 response (carries the
+            held deposit). Omitted on list/detail/cancel/check-in responses.
 
-    # ---- breaches ------------------------------------------------------------
-    BreachKind:
+    ReservationDepositInfo:
+      type: object
+      required: [deposit_cents]
+      properties:
+        deposit_cents:
+          type: integer
+          description: Amount held on the user's mock card at booking, in cents.
+          example: 1000
+
+    # ---- payments ------------------------------------------------------------
+    PaymentAction:
+      type: string
+      enum: [pre_auth, release, refund, penalty_capture]
+      description: |
+        - `pre_auth` — deposit hold at booking.
+        - `release` — restore remaining deposit (clean cancel / completion /
+          remainder after a partial penalty).
+        - `refund` — full refund issued on strong-evidence conflicts (the
+          holder is a victim, not a violator).
+        - `penalty_capture` — penalty kept from the deposit
+          (`late_cancel` / `no_show` / `weak_conflict`).
+
+    PenaltyKind:
       type: string
       enum: [late_cancel, no_show, weak_conflict]
       description: |
-        Strong-evidence conflicts are deliberately **not** a user breach
-        (proposal §5.5) — the holder is treated as a victim of misuse.
+        Set only when `action='penalty_capture'`. Strong-evidence conflicts
+        are deliberately **not** a user penalty (proposal §5.5).
 
-    BreachOut:
+    PaymentStatus:
+      type: string
+      enum: [succeeded, failed, voided]
+
+    TransactionOut:
       type: object
-      required: [id, kind, occurred_at]
+      required: [id, reservation_id, action, amount_cents, status, occurred_at]
       properties:
         id: { type: string, format: uuid }
-        kind: { $ref: "#/components/schemas/BreachKind" }
-        reservation_id: { type: string, format: uuid, nullable: true }
+        reservation_id: { type: string, format: uuid }
+        action: { $ref: "#/components/schemas/PaymentAction" }
+        penalty_kind:
+          allOf:
+            - $ref: "#/components/schemas/PenaltyKind"
+          nullable: true
+        amount_cents: { type: integer }
+        status: { $ref: "#/components/schemas/PaymentStatus" }
         occurred_at: { type: string, format: date-time }
 
-    BreachListResponse:
+    TransactionListResponse:
       type: object
-      required: [breaches, monthly_count, threshold, is_banned]
+      required: [transactions]
       properties:
-        breaches:
+        transactions:
           type: array
-          items: { $ref: "#/components/schemas/BreachOut" }
-        monthly_count: { type: integer, example: 1 }
-        threshold:
-          type: integer
-          description: |
-            Maximum tolerated breaches per rolling month. `is_banned` flips
-            true once `monthly_count > threshold` (default threshold = 2).
-          example: 2
-        is_banned: { type: boolean }
+          items: { $ref: "#/components/schemas/TransactionOut" }
 
     # ---- conflicts -----------------------------------------------------------
     ConflictKind:
       type: string
       enum: [strong, weak]
       description: |
-        `strong` — LPR plate ∉ user's bound plates (facility incident, no
-        user breach). `weak` — LPR did not auto-resolve and the check-in
-        grace expired (user breach `weak_conflict`).
+        `strong` — LPR plate ∉ user's bound plates (facility incident; the
+        holder's deposit is **refunded**, no penalty). `weak` — LPR did
+        not auto-resolve and the check-in grace expired (a `weak_conflict`
+        penalty is captured against the deposit).
 
     ConflictResolution:
       type: string

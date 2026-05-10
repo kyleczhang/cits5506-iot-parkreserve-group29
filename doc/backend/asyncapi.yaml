@@ -58,7 +58,7 @@ servers:
       host:
         default: "localhost"
       port:
-        default: "5000"
+        default: "8000"
 
 # ---------------------------------------------------------------------------
 # Channels
@@ -103,9 +103,10 @@ channels:
 
   cloud/system/heartbeat:
     description: |
-      Pi → Backend, every ~10 s. Absence > 30 s flips the bay-state
-      mirror to `offline` for the Pi's bays. `extra="ignore"` on the
-      pydantic schema — extra keys are tolerated.
+      Pi → Backend, every ~10 s. The backend currently consumes these
+      pings for observability/logging only; it does not derive bay
+      `offline` state from heartbeat absence. `extra="ignore"` on the
+      pydantic schema means extra keys are tolerated.
     bindings:
       mqtt:
         qos: 0
@@ -138,10 +139,11 @@ channels:
 
   cloud/system/resync:
     description: |
-      Backend → Pi. Empty payload sent on backend reconnect to ask the
-      Pi to replay the latest `cloud/bay/<code>/state` for every bay
-      *and* the latest `cloud/bay/<code>/reservation` for every open
-      reservation. Replay is idempotent on `event_id`.
+      Backend → Pi. Sent on backend reconnect to ask the Pi to replay
+      the latest `cloud/bay/<code>/state` for every bay *and* the latest
+      `cloud/bay/<code>/reservation` for every open reservation. The
+      payload is `{ "request": "replay" }`. Replay is idempotent on
+      `event_id`.
     bindings:
       mqtt:
         qos: 1
@@ -236,19 +238,46 @@ channels:
       message:
         $ref: "#/components/messages/WsConflict"
 
-  # ============================================================== Socket.IO (client → server)
-  subscribe:
+  payment.deposit_released:
     description: |
-      Client → server. Optional channel-filter request. With no
-      `bay_codes` (or an empty list), the client receives updates for
-      all bays — the default behaviour.
+      Server → client. The `pre_auth` deposit hold has been released —
+      either after a clean cancel, after the reservation completed, or
+      as the remainder following a partial penalty capture. `reason`
+      identifies which path triggered the release (e.g. `clean_cancel`,
+      `completed`, `remainder`).
     bindings:
       ws:
         bindingVersion: "0.1.0"
-    subscribe:
-      operationId: wsSubscribe
+    publish:
+      operationId: wsPaymentDepositReleased
       message:
-        $ref: "#/components/messages/WsSubscribeRequest"
+        $ref: "#/components/messages/WsPaymentDepositReleased"
+
+  payment.refunded:
+    description: |
+      Server → client. The full deposit was refunded because a
+      strong-evidence conflict was raised against the holder's
+      reservation — they are treated as a victim (proposal §5.5).
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsPaymentRefunded
+      message:
+        $ref: "#/components/messages/WsPaymentRefunded"
+
+  payment.penalty_captured:
+    description: |
+      Server → client. A `penalty_capture` row was inserted against the
+      reservation's deposit. `penalty_kind` is one of `late_cancel`,
+      `no_show`, `weak_conflict`.
+    bindings:
+      ws:
+        bindingVersion: "0.1.0"
+    publish:
+      operationId: wsPaymentPenaltyCaptured
+      message:
+        $ref: "#/components/messages/WsPaymentPenaltyCaptured"
 
 # ---------------------------------------------------------------------------
 # Components
@@ -306,11 +335,16 @@ components:
     Resync:
       name: Resync
       title: Pi state-replay request (Backend → Pi)
-      summary: Empty payload — the topic alone is the signal.
+      summary: Request payload asking the Pi to replay current state.
       contentType: application/json
       payload:
         type: object
+        required: [request]
         additionalProperties: false
+        properties:
+          request:
+            type: string
+            enum: [replay]
 
     # -------- Socket.IO message envelopes (server → client)
     WsBayUpdated:
@@ -349,12 +383,23 @@ components:
       payload:
         $ref: "#/components/schemas/WsConflictPayload"
 
-    # -------- Socket.IO message envelopes (client → server)
-    WsSubscribeRequest:
-      name: WsSubscribeRequest
-      title: "`subscribe` payload"
+    WsPaymentDepositReleased:
+      name: WsPaymentDepositReleased
+      title: "`payment.deposit_released` payload"
       payload:
-        $ref: "#/components/schemas/WsSubscribePayload"
+        $ref: "#/components/schemas/WsPaymentReleasePayload"
+
+    WsPaymentRefunded:
+      name: WsPaymentRefunded
+      title: "`payment.refunded` payload"
+      payload:
+        $ref: "#/components/schemas/WsPaymentReleasePayload"
+
+    WsPaymentPenaltyCaptured:
+      name: WsPaymentPenaltyCaptured
+      title: "`payment.penalty_captured` payload"
+      payload:
+        $ref: "#/components/schemas/WsPaymentPenaltyPayload"
 
   # ----------------------------------------------------------------- Schemas
   schemas:
@@ -369,11 +414,6 @@ components:
         - reserved_checked_in
         - conflict
         - offline
-      description: |
-        Includes `offline` even though the `parking_bays.state` mirror
-        does not — the Pi may briefly publish `offline` during sensor
-        bring-up.
-
     EventLiteral:
       type: string
       enum:
@@ -489,7 +529,10 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Present on `create` and `update_plates`.
+          description: |
+            Present on every action that carries a reservation (`create`,
+            `cancel`, `check_in`, `update_plates`); null only when the
+            backend is publishing without a reservation object.
         ts:
           type: string
           format: date-time
@@ -634,14 +677,28 @@ components:
           enum: [vehicle_left, admin_resolved, user_arrived_and_checked_in]
           nullable: true
 
-    WsSubscribePayload:
+    WsPaymentReleasePayload:
       type: object
-      additionalProperties: false
+      required: [reservation_id, user_id, amount_cents, reason]
       properties:
-        bay_codes:
-          type: array
+        reservation_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        amount_cents: { type: integer }
+        reason:
+          type: string
           description: |
-            Optional filter — only emit updates for these bay codes. If
-            omitted or empty, the client receives all bays (default).
-          items:
-            type: string
+            Free-form reason tag. For `payment.refunded` the backend
+            currently emits `strong_conflict`. For
+            `payment.deposit_released` the value identifies the path
+            (e.g. `clean_cancel`, `completed`, `remainder`).
+
+    WsPaymentPenaltyPayload:
+      type: object
+      required: [reservation_id, user_id, penalty_kind, amount_cents]
+      properties:
+        reservation_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        penalty_kind:
+          type: string
+          enum: [late_cancel, no_show, weak_conflict]
+        amount_cents: { type: integer }

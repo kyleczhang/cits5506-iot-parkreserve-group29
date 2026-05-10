@@ -34,15 +34,5 @@ __pycache__/
 # --- OS Generated Files ---
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# --- IDE Configs ---
-.vscode/
-.idea/
-*.swp
+CLAUDE.md
+.vscode
