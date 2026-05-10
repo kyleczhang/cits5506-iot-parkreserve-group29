@@ -1,3 +1,48 @@
+# ==========================================
+# ParkReserve Root .gitignore
+# ==========================================
+
+# --- Project Specific ---
+# Ignore locally captured images
+**/incoming_plates/
+*.jpg
+*.jpeg
+*.png
+
+# --- AI / Claude Assistant Files ---
+# Ignore local Claude/LLM-specific configuration files
 .claude
-.DS_Store
 CLAUDE.md
+
+# --- Python / Flask ---
+# Ignore virtual environments
+**/venv/
+**/env/
+
+# Ignore Python byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Arduino / ESP32 ---
+# Ignore build artifacts and binary firmware files
+**/build/
+*.elf
+*.bin
+*.hex
+
+# --- OS Generated Files ---
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- IDE Configs ---
+.vscode/
+.idea/
+*.swp
