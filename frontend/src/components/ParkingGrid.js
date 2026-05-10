@@ -10,18 +10,23 @@ function ParkingGrid({
 
   const reservationCost = 10;
 
+  // Registered vehicle plate
+  const vehiclePlate =
+    localStorage.getItem("vehiclePlate");
+
   // Search + filter
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
   // Modal state
-  const [selectedSpotId, setSelectedSpotId] = useState(null);
+  const [selectedSpotId, setSelectedSpotId] =
+    useState(null);
 
   // Parking spots
   const [spots, setSpots] = useState([
     { id: 1, status: "available", timer: 0 },
     { id: 2, status: "occupied", timer: 0 },
-    { id: 3, status: "reserved", timer: 30 }
+    { id: 3, status: "available", timer: 0 }
   ]);
 
   // Selected spot
@@ -40,7 +45,6 @@ function ParkingGrid({
   };
 
   // Reservation countdown
-   // Reservation countdown
   useEffect(() => {
 
     const interval = setInterval(() => {
@@ -49,51 +53,36 @@ function ParkingGrid({
 
         return prevSpots.map((spot) => {
 
-          // Reserved spots countdown
-          if (spot.status === "reserved") {
+          // Countdown timer
+          if (
+            spot.status === "reserved" &&
+            spot.timer > 1
+          ) {
 
-            // Continue countdown
-            if (spot.timer > 1) {
+            return {
+              ...spot,
+              timer: spot.timer - 1
+            };
 
-              return {
-                ...spot,
-                timer: spot.timer - 1
-              };
+          }
 
-            }
+          // Expire reservation ONCE
+          if (
+            spot.status === "reserved" &&
+            spot.timer === 1
+          ) {
 
-            // Expire reservation ONCE
-            if (spot.timer === 1) {
+            // Expiry activity
+            setHistory((prevHistory) => [
+              `⌛ Reservation expired for Spot ${spot.id} (No refund) - ${getCurrentTime()}`,
+              ...prevHistory
+            ]);
 
-              // Add expiry activity ONLY once
-              setHistory((prevHistory) => {
-
-                const alreadyExists = prevHistory.some(
-                  (item) =>
-                    item.includes(
-                      `Reservation expired for Spot ${spot.id}`
-                    )
-                );
-
-                if (alreadyExists) {
-                  return prevHistory;
-                }
-
-                return [
-                  `⌛ Reservation expired for Spot ${spot.id} - ${getCurrentTime()}`,
-                  ...prevHistory
-                ];
-
-              });
-
-              // Release spot
-              return {
-                ...spot,
-                status: "available",
-                timer: 0
-              };
-
-            }
+            return {
+              ...spot,
+              status: "available",
+              timer: 0
+            };
 
           }
 
@@ -107,11 +96,20 @@ function ParkingGrid({
 
     return () => clearInterval(interval);
 
-  }, [setBalance, setHistory]);
+  }, [setHistory]);
 
   // Reserve spot
   const reserveSpot = (id) => {
 
+    // Vehicle validation
+    if (!vehiclePlate) {
+      alert(
+        "Please register a vehicle plate first!"
+      );
+      return;
+    }
+
+    // Wallet validation
     if (balance < reservationCost) {
       alert("Not enough balance!");
       return;
@@ -143,9 +141,9 @@ function ParkingGrid({
       prevBalance - reservationCost
     );
 
-    // Add history
+    // Reservation history
     setHistory((prevHistory) => [
-      `🟡 Reserved Spot ${id} - ${getCurrentTime()}`,
+      `🟡 Reserved Spot ${id} for vehicle ${vehiclePlate} - ${getCurrentTime()}`,
       ...prevHistory
     ]);
   };
@@ -179,7 +177,7 @@ function ParkingGrid({
       prevBalance + reservationCost
     );
 
-    // Add history
+    // Activity
     setHistory((prevHistory) => [
       `❌ Cancelled Spot ${id} - ${getCurrentTime()}`,
       ...prevHistory
@@ -241,7 +239,9 @@ function ParkingGrid({
           type="text"
           placeholder="Search Spot ID"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) =>
+            setSearch(e.target.value)
+          }
           style={{
             padding: "10px",
             borderRadius: "8px",
@@ -251,7 +251,9 @@ function ParkingGrid({
 
         <select
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) =>
+            setFilter(e.target.value)
+          }
           style={{
             padding: "10px",
             borderRadius: "8px",
@@ -259,9 +261,15 @@ function ParkingGrid({
           }}
         >
           <option value="all">All Spots</option>
-          <option value="available">Available</option>
-          <option value="occupied">Occupied</option>
-          <option value="reserved">Reserved</option>
+          <option value="available">
+            Available
+          </option>
+          <option value="occupied">
+            Occupied
+          </option>
+          <option value="reserved">
+            Reserved
+          </option>
         </select>
 
       </div>
@@ -305,7 +313,9 @@ function ParkingGrid({
         {filteredSpots.map((spot) => (
           <div
             key={spot.id}
-            onClick={() => setSelectedSpotId(spot.id)}
+            onClick={() =>
+              setSelectedSpotId(spot.id)
+            }
             style={{ cursor: "pointer" }}
           >
 
@@ -314,7 +324,9 @@ function ParkingGrid({
               status={spot.status}
               timer={spot.timer}
               reserveSpot={reserveSpot}
-              cancelReservation={cancelReservation}
+              cancelReservation={
+                cancelReservation
+              }
             />
 
           </div>
@@ -325,7 +337,9 @@ function ParkingGrid({
       {/* Modal */}
       <SpotModal
         spot={selectedSpot}
-        onClose={() => setSelectedSpotId(null)}
+        onClose={() =>
+          setSelectedSpotId(null)
+        }
         reserveSpot={reserveSpot}
         cancelReservation={cancelReservation}
       />

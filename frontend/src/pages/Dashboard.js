@@ -13,6 +13,10 @@ function Dashboard() {
   // Dynamic reservation history
   const [history, setHistory] = useState([]);
 
+  // Get registered vehicle plate
+  const vehiclePlate =
+    localStorage.getItem("vehiclePlate");
+
   // Add credits
   const addCredits = () => {
 
@@ -31,7 +35,8 @@ function Dashboard() {
           textAlign: "center",
           minHeight: "100vh",
           paddingTop: "30px",
-          background: "linear-gradient(to right, #f5f7fa, #e4ecf7)"
+          background:
+            "linear-gradient(to right, #f5f7fa, #e4ecf7)"
         }}
       >
 
@@ -61,7 +66,8 @@ function Dashboard() {
               minHeight: "260px",
               padding: "25px",
               borderRadius: "12px",
-              boxShadow: "0 6px 14px rgba(0,0,0,0.08)"
+              boxShadow:
+                "0 6px 14px rgba(0,0,0,0.08)"
             }}
           >
 
@@ -73,7 +79,12 @@ function Dashboard() {
               Balance: ${balance}
             </h3>
 
-            <p style={{ color: "gray", marginBottom: "20px" }}>
+            <p
+              style={{
+                color: "gray",
+                marginBottom: "20px"
+              }}
+            >
               Reservation Cost: $10
             </p>
 
@@ -81,7 +92,9 @@ function Dashboard() {
               type="number"
               placeholder="Enter amount"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) =>
+                setAmount(e.target.value)
+              }
               style={{
                 width: "80%",
                 padding: "10px",
@@ -118,7 +131,8 @@ function Dashboard() {
               minHeight: "260px",
               padding: "25px",
               borderRadius: "12px",
-              boxShadow: "0 6px 14px rgba(0,0,0,0.08)",
+              boxShadow:
+                "0 6px 14px rgba(0,0,0,0.08)",
               textAlign: "left"
             }}
           >
@@ -132,11 +146,20 @@ function Dashboard() {
             </p>
 
             <p>
-              <strong>Email:</strong> riya@example.com
+              <strong>Email:</strong>
+              {" "}riya@example.com
             </p>
 
             <p>
-              <strong>Vehicle:</strong> 1ABC234
+              <strong>Registered Vehicle:</strong>
+              {" "}
+              {vehiclePlate || "Not Registered"}
+            </p>
+
+            <p style={{ marginTop: "15px" }}>
+              <strong>LPR Status:</strong>
+              {" "}
+              Ready for validation
             </p>
 
           </div>
@@ -149,7 +172,8 @@ function Dashboard() {
               minHeight: "260px",
               padding: "25px",
               borderRadius: "12px",
-              boxShadow: "0 6px 14px rgba(0,0,0,0.08)",
+              boxShadow:
+                "0 6px 14px rgba(0,0,0,0.08)",
               textAlign: "left"
             }}
           >
@@ -163,7 +187,9 @@ function Dashboard() {
                 {history.map((item, index) => (
                   <li
                     key={index}
-                    style={{ marginBottom: "12px" }}
+                    style={{
+                      marginBottom: "12px"
+                    }}
                   >
                     {item}
                   </li>
