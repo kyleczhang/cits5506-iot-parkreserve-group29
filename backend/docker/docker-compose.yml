@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: parkreserve-postgres
+    environment:
+      POSTGRES_USER: parkreserve
+      POSTGRES_PASSWORD: parkreserve
+      POSTGRES_DB: parkreserve
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parkreserve"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: parkreserve-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./data/mosquitto:/mosquitto/data

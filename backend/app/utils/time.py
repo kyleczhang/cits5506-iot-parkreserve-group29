@@ -1,3 +1,5 @@
+"""Timezone-aware time helpers used by services, jobs, and tests."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

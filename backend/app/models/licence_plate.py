@@ -1,3 +1,5 @@
+"""Persisted licence plates bound to a user account."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -29,6 +31,8 @@ MAX_PLATES_PER_USER = 5
 
 
 class LicencePlate(db.Model):
+    """One normalised licence plate owned by a single user account."""
+
     __tablename__ = "licence_plates"
     __table_args__ = (
         UniqueConstraint("user_id", "plate", name="licence_plates_user_plate_unique"),

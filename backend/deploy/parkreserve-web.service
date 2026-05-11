@@ -1,0 +1,41 @@
+[Unit]
+Description=ParkReserve backend process (HTTP + Socket.IO + MQTT + scheduler)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=parkreserve
+Group=parkreserve
+WorkingDirectory=/opt/parkreserve/backend
+EnvironmentFile=/opt/parkreserve/backend/.env
+Environment=PATH=/opt/parkreserve/backend/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+
+# Socket.IO needs a single eventlet worker (sticky in-process state for
+# websockets). `create_wsgi_app` also starts inbound MQTT and APScheduler
+# inside this process, so do not scale this unit horizontally.
+ExecStart=/opt/parkreserve/backend/.venv/bin/gunicorn \
+    --worker-class eventlet \
+    --workers 1 \
+    --bind 127.0.0.1:8000 \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info \
+    "app:create_wsgi_app()"
+
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening — Caddy fronts the app; this unit binds only to localhost.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/parkreserve/backend
+
+[Install]
+WantedBy=multi-user.target
