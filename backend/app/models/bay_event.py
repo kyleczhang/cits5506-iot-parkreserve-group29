@@ -1,3 +1,5 @@
+"""Append-only audit log for bay state changes and Pi-originated events."""
+
 from __future__ import annotations
 
 import enum
@@ -24,6 +26,8 @@ from app.models.bay import BayState
 
 
 class BayEventKind(str, enum.Enum):
+    """Event categories recorded in the ``bay_events`` audit table."""
+
     STATE_CHANGED = "state_changed"
     SENSOR_ONLINE = "sensor_online"
     SENSOR_OFFLINE = "sensor_offline"
@@ -41,6 +45,8 @@ class BayEventKind(str, enum.Enum):
 
 
 class BayEvent(db.Model):
+    """Immutable audit-log row describing one bay or reservation event."""
+
     __tablename__ = "bay_events"
     __table_args__ = (
         UniqueConstraint("source_event_id", name="bay_events_source_event_unique"),

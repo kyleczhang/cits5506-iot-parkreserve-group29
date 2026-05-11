@@ -1,3 +1,5 @@
+"""Mock-bank card model used by the in-process payment simulator."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -11,7 +13,7 @@ from app.extensions import db
 
 
 class MockCard(db.Model):
-    """In-process mock-bank card (proposal §5.6).
+    """In-process mock-bank card.
 
     Seeded test data only — never accepts real card numbers.
     `balance_cents` is decremented on `pre_auth` and restored on

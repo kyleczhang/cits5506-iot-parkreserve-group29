@@ -1,3 +1,5 @@
+"""Historical ultrasonic sensor readings reported by a parking bay device."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,6 +21,8 @@ from app.extensions import db
 
 
 class SensorReading(db.Model):
+    """Time-series record of one occupancy reading received from a bay sensor."""
+
     __tablename__ = "sensor_readings"
     __table_args__ = (Index("sensor_readings_bay_time_idx", "bay_id", "recorded_at"),)
 

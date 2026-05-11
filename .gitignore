@@ -1,4 +1,21 @@
-.claude
+# macOS
 .DS_Store
-CLAUDE.md
-.vscode
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Linting
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+a.sql

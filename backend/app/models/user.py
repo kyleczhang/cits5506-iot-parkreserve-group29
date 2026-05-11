@@ -1,3 +1,10 @@
+"""User account model for authentication and reservation ownership.
+
+This module defines the persisted user identity used by the backend. A user
+owns reservations and bound licence plates, and carries a small role enum for
+authorisation decisions such as admin-only operations.
+"""
+
 from __future__ import annotations
 
 import enum
@@ -18,11 +25,15 @@ if TYPE_CHECKING:
 
 
 class UserRole(str, enum.Enum):
+    """Application-level role assigned to a persisted user account."""
+
     USER = "user"
     ADMIN = "admin"
 
 
 class User(TimestampMixin, db.Model):
+    """User row backing authentication, authorisation, and ownership links."""
+
     __tablename__ = "users"
 
     id: Mapped[UUID] = mapped_column(
@@ -50,4 +61,6 @@ class User(TimestampMixin, db.Model):
     )
 
     def __repr__(self) -> str:
+        """Return a compact debug representation keyed by email."""
+
         return f"<User {self.email}>"

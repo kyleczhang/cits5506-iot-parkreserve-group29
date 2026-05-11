@@ -1,3 +1,5 @@
+"""Reservation model and enums for the paid parking booking flow."""
+
 from __future__ import annotations
 
 import enum
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
 
 
 class ReservationStatus(str, enum.Enum):
+    """Lifecycle states for a reservation mirrored between backend and Pi."""
+
     ACTIVE = "active"  # reserved, user not yet arrived
     PENDING_CHECK_IN = "pending_check_in"  # Pi reports vehicle; awaiting auto/manual check-in
     CHECKED_IN = "checked_in"  # auto via LPR, or manual QR / button
@@ -38,6 +42,8 @@ class ReservationStatus(str, enum.Enum):
 
 
 class CheckInMechanism(str, enum.Enum):
+    """How a reservation was checked in once the vehicle arrived."""
+
     AUTO_LPR = "auto_lpr"
     QR = "qr"
     MANUAL = "manual"
@@ -53,9 +59,11 @@ OPEN_STATUSES = frozenset(
 
 
 class Reservation(TimestampMixin, db.Model):
+    """Reservation row linking one user to one bay within a booking window."""
+
     __tablename__ = "reservations"
     __table_args__ = (
-        # Booking window: 0 < expected_arrival - booked ≤ 1 hour (proposal §5.5)
+        # Booking window: 0 < expected_arrival - booked <= 1 hour.
         CheckConstraint(
             "expected_arrival_time > booked_at "
             "AND expected_arrival_time <= booked_at + INTERVAL '1 hour'",
@@ -73,7 +81,7 @@ class Reservation(TimestampMixin, db.Model):
             "OR status NOT IN ('cancelled', 'cancelled_late')",
             name="reservations_cancelled_has_ts",
         ),
-        # auto_lpr always carries recognised plate; qr/manual never do (proposal §5.5)
+        # auto_lpr always carries a recognised plate; qr/manual never do.
         CheckConstraint(
             "(check_in_mechanism = 'auto_lpr' AND check_in_recognised_plate IS NOT NULL) "
             "OR (check_in_mechanism IN ('qr', 'manual') AND check_in_recognised_plate IS NULL) "

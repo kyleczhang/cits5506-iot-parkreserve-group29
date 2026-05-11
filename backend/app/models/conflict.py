@@ -1,3 +1,5 @@
+"""Conflict records for strong and weak bay-access mismatches."""
+
 from __future__ import annotations
 
 import enum
@@ -25,17 +27,23 @@ from app.extensions import db
 
 
 class ConflictKind(str, enum.Enum):
+    """Evidence strength for a bay conflict raised by the Pi."""
+
     STRONG = "strong"
     WEAK = "weak"
 
 
 class ConflictResolution(str, enum.Enum):
+    """Administrative or operational outcomes that close a conflict."""
+
     USER_ARRIVED_AND_CHECKED_IN = "user_arrived_and_checked_in"  # only valid for kind='weak'
     VEHICLE_LEFT = "vehicle_left"
     ADMIN_RESOLVED = "admin_resolved"
 
 
 class Conflict(db.Model):
+    """Open or resolved conflict incident associated with a parking bay."""
+
     __tablename__ = "conflicts"
     __table_args__ = (
         UniqueConstraint("source_event_id", name="conflicts_source_event_unique"),
@@ -44,14 +52,14 @@ class Conflict(db.Model):
             "(resolved_at IS NOT NULL AND resolution IS NOT NULL)",
             name="conflicts_resolution_consistent",
         ),
-        # Strong conflicts must carry the recognised plate; weak conflicts must not (proposal §5.5).
+        # Strong conflicts must carry the recognised plate; weak conflicts must not.
         CheckConstraint(
             "(kind = 'strong' AND recognised_plate IS NOT NULL) OR "
             "(kind = 'weak'   AND recognised_plate IS NULL "
             "                  AND evidence_image_url IS NULL)",
             name="conflicts_evidence_matches_kind",
         ),
-        # Strong conflicts cannot be resolved by a user check-in (proposal §5.5).
+        # Strong conflicts cannot be resolved by a user check-in.
         CheckConstraint(
             "kind <> 'strong' OR resolution IS DISTINCT FROM 'user_arrived_and_checked_in'",
             name="conflicts_strong_resolution_excludes_user_check_in",
