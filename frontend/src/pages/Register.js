@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
+import { API_ENDPOINTS } from "../services/api";
 
 function Register() {
 
@@ -7,14 +8,48 @@ function Register() {
 
   const [plate, setPlate] = useState("");
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
 
+    try {
+
+      const response = await fetch(
+        API_ENDPOINTS.register,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            name: "Demo User",
+            email: "demo@parkreserve.com",
+            password: "password123",
+            vehiclePlate: plate.toUpperCase()
+          })
+        }
+      );
+
+      console.log(
+        "Register response status:",
+        response.status
+      );
+
+    } catch (error) {
+
+      console.log(
+        "Backend not connected yet:",
+        error
+      );
+
+    }
+
+    // Store locally for frontend demo workflow
     localStorage.setItem(
       "vehiclePlate",
       plate.toUpperCase()
     );
 
     navigate("/dashboard");
+
   };
 
   return (

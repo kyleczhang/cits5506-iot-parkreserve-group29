@@ -1,16 +1,50 @@
 import { Link, useNavigate } from "react-router-dom";
+import { API_ENDPOINTS } from "../services/api";
 
 function Login() {
 
   const navigate = useNavigate();
 
-  const handleLogin = () => {
-    navigate("/dashboard");
+  const handleLogin = async () => {
+
+    try {
+
+      const response = await fetch(
+        API_ENDPOINTS.login,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            email: "demo@parkreserve.com",
+            password: "password123"
+          })
+        }
+      );
+
+      console.log(
+        "Login response status:",
+        response.status
+      );
+
+      // Temporary frontend navigation
+      navigate("/dashboard");
+
+    } catch (error) {
+
+      console.log(
+        "Backend not connected yet:",
+        error
+      );
+
+      // Allow frontend demo workflow
+      navigate("/dashboard");
+
+    }
+
   };
 
-  <button onClick={handleLogin}>
-  Login
-</button>
   return (
     <div
       style={{
@@ -79,6 +113,7 @@ function Login() {
           Don’t have an account?{" "}
           <Link to="/register">Register</Link>
         </p>
+
       </div>
     </div>
   );
