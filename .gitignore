@@ -19,3 +19,10 @@
 !.env.example
 
 a.sql
+
+# Raspberry Pi
+raspberry/tmp/
+raspberry/config/settings.py
+raspberry/**/__pycache__/
+raspberry/**/*.pyc
+raspberry/.pytest_cache/

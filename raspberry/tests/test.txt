@@ -1,0 +1,259 @@
+接口1：预约创建
+Backend 发，Pi 收
+话题：cloud/bay/A1/reservation
+json{
+  "action": "create",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "user_id": "660e8400-e29b-41d4-a716-446655440001",
+  "bound_plates": ["1ABC234", "5XYZ789"],
+  "expected_arrival_time": "2026-12-31T10:00:00+00:00",
+  "ts": "2026-05-07T10:00:00+00:00"
+}
+Pi 预期日志：
+[A1] available → reserved
+[LocalMQTT] → bay/A1/led  {"color": "yellow", "blink": false, "buzzer": false}
+
+接口2：车牌列表更新
+Backend 发，Pi 收
+话题：cloud/bay/A1/reservation
+json{
+  "action": "update_plates",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "bound_plates": ["1ABC234", "5XYZ789", "9NEW999"],
+  "ts": "2026-05-07T10:01:00+00:00"
+}
+Pi 预期日志：
+[A1] 绑定车牌更新：['1ABC234', '5XYZ789', '9NEW999']
+
+接口3：手动 check-in
+Backend 发，Pi 收（用户在 App 上点了 check-in 按钮）
+话题：cloud/bay/A1/reservation
+json{
+  "action": "check_in",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "ts": "2026-05-07T10:05:00+00:00"
+}
+Pi 预期日志（前提：当前状态为 pending_check_in）：
+[A1] pending_check_in → reserved_checked_in
+[LocalMQTT] → bay/A1/led  {"color": "red", "blink": false, "buzzer": false}
+
+接口4：预约取消
+Backend 发，Pi 收
+话题：cloud/bay/A1/reservation
+json{
+  "action": "cancel",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "ts": "2026-05-07T10:02:00+00:00"
+}
+Pi 预期日志：
+[A1] reserved → available
+[LocalMQTT] → bay/A1/led  {"color": "green", "blink": false, "buzzer": false}
+
+接口5：Resync 请求
+Backend 发，Pi 收（Backend 重启后要求 Pi 重新上报所有状态）
+话题：cloud/system/resync
+json{}
+Pi 预期日志：
+[CloudMQTT] 收到 resync 请求，重新上报所有状态
+[A1] resync → 重新上报状态 available
+[A2] resync → 重新上报状态 available
+[A3] resync → 重新上报状态 available
+
+2. 我这边模拟 ESP32，Backend 预期收到的数据
+以下场景用 mosquitto_pub 在本地触发，Backend 订阅 cloud/bay/+/state、cloud/bay/+/event、cloud/system/heartbeat 验收。
+
+场景A：车辆到达有预约的车位 → LPR 匹配成功
+操作步骤：
+bash# 第一步：先让 Backend 发预约（见接口1）
+
+# 第二步：模拟车辆到达
+mosquitto_pub -h localhost -t "bay/A1/status" \
+  -m '{"occupied":true,"distance_cm":12.0}'
+Backend 预期依次收到：
+json// cloud/bay/A1/state
+{
+  "state": "pending_check_in",
+  "last_distance_cm": 12.0,
+  "ts": "2026-05-07T10:00:00+00:00",
+  "event_id": "uuid-xxx"
+}
+
+// cloud/bay/A1/event
+{
+  // 车到了， 未完成自动识别
+  "event": "pending_check_in",
+  "ts": "2026-05-07T10:00:00+00:00",
+  "event_id": "uuid-xxx",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+
+// （Mock LPR 自动触发，约1秒后）
+// cloud/bay/A1/state
+{
+  // 
+  "state": "reserved_checked_in",
+  "last_distance_cm": 12.0,
+  "ts": "2026-05-07T10:00:01+00:00",
+  "event_id": "uuid-yyy"
+}
+
+// cloud/bay/A1/event
+{
+  // 车到了， 识别成功
+  "event": "auto_check_in",
+  "ts": "2026-05-07T10:00:01+00:00",
+  "event_id": "uuid-yyy",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "recognised_plate": "1ABC234",
+  "lpr_confidence": 0.95
+}
+
+场景B：车辆到达有预约的车位 → LPR 不匹配 → conflict_strong
+先把 Mock 改成不匹配的车牌，在 control_service.py 里：
+pythonself.mock_plate = "9ZZZ999"   # 不在绑定列表里
+self.mock_confidence = 0.95
+bashmosquitto_pub -h localhost -t "bay/A1/status" \
+  -m '{"occupied":true,"distance_cm":12.0}'
+Backend 预期收到：
+json// cloud/bay/A1/state
+{"state": "conflict", "last_distance_cm": 12.0, "ts": "...", "event_id": "..."}
+
+// cloud/bay/A1/event
+{
+  // 车到了， 车牌不再列表
+  "event": "conflict_strong",
+  "ts": "...",
+  "event_id": "...",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "recognised_plate": "9ZZZ999",
+  "lpr_confidence": 0.95
+}
+
+场景C：LPR 置信度不足 → 人工 check-in 超时 → conflict_weak
+把 Mock 改成低置信度：
+pythonself.mock_confidence = 0.50   # 低于 0.80 阈值
+bash# 车辆到达
+mosquitto_pub -h localhost -t "bay/A1/status" \
+  -m '{"occupied":true,"distance_cm":12.0}'
+
+# 等待 5 分钟超时（测试时可把 MANUAL_CHECKIN_GRACE_SECONDS 改成 10）
+Backend 预期收到：
+json// cloud/bay/A1/event（超时后）
+{
+  // 车到了， 手动check in识别的时间到了
+  "event": "conflict_weak",
+  "ts": "...",
+  "event_id": "...",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+
+场景D：预约了但车没来 → no_show
+把 NO_SHOW_GRACE_SECONDS 改成 10 方便测试。
+bash# 只发预约，不发车辆到达，等待超时
+Backend 预期收到：
+json// cloud/bay/A1/event（10秒后）
+{
+  "event": "no_show",
+  "ts": "...",
+  "event_id": "...",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+
+// cloud/bay/A1/state
+{"state": "available", "last_distance_cm": 0.0, "ts": "...", "event_id": "..."}
+
+场景E：无预约车辆到达 → occupied
+bashmosquitto_pub -h localhost -t "bay/A1/status" \
+  -m '{"occupied":true,"distance_cm":12.0}'
+Backend 预期收到：
+json// cloud/bay/A1/state
+{"state": "occupied", "last_distance_cm": 12.0, "ts": "...", "event_id": "..."}
+
+场景F：心跳（每10秒自动）
+Backend 预期每10秒收到：
+json// cloud/system/heartbeat
+{
+  "pi_id": "pi-01",
+  "ts": "2026-05-07T10:00:00+00:00"
+}
+
+
+3. 我这边要接收 ESP32 的哪些接口
+接口1：传感器状态（每2秒）
+ESP32 发，Pi 收
+话题：bay/A1/status
+json{"occupied": true, "distance_cm": 12.5}
+或
+json{"occupied": false, "distance_cm": 280.0}
+Pi 预期日志：
+# 车辆到达
+[A1] available → occupied
+
+# 车辆离开
+[A1] occupied → available
+
+接口2：车牌图片上传（车辆到达时触发一次）
+ESP32 发，Pi 收
+POST http://<pi_ip>:8080/upload?bay=A1
+Content-Type: multipart/form-data
+Body: file=<jpeg图片>
+Pi 预期日志：
+[ImageReceiver] 保存：./tmp/parkReserve/images/A1_1234567890.jpg（xxxxx bytes）
+[LPR Mock] plate=1ABC234, conf=0.95
+[A1] pending_check_in → reserved_checked_in
+用 curl 模拟测试：
+bashcurl -X POST "http://localhost:8080/upload?bay=A1" \
+  -F "file=@/path/to/test.jpg"
+预期响应：
+json{"status": "ok", "saved": "A1_1234567890.jpg"}
+
+4. 我这边要给 ESP32 发送哪些接口和数据
+指令1：绿灯常亮（available）
+话题：bay/A1/led
+json{"color": "green", "blink": false, "buzzer": false}
+ESP32 预期行为： 绿灯亮，黄灯灭，红灯灭，蜂鸣器关
+mosquitto_pub -h 10.36.224.37 -t "bay/A1/led" -m '{"color":"green","blink":false,"buzzer":false}'
+
+指令2：黄灯常亮（reserved）
+话题：bay/A1/led
+json{"color": "yellow", "blink": false, "buzzer": false}
+ESP32 预期行为： 黄灯亮，其他灯灭，蜂鸣器关
+mosquitto_pub -h 10.36.224.37 -t "bay/A1/led" -m '{"color":"yellow","blink":false,"buzzer":false}'
+
+指令3：黄灯闪烁（pending_check_in）
+话题：bay/A1/led
+json{"color": "yellow", "blink": true, "buzzer": false}
+ESP32 预期行为： 黄灯约1Hz闪烁，蜂鸣器关
+mosquitto_pub -h 10.36.224.37 -t "bay/A1/led" -m '{"color":"yellow","blink":true,"buzzer":false}'
+
+指令4：红灯常亮（occupied / reserved_checked_in）
+话题：bay/A1/led
+json{"color": "red", "blink": false, "buzzer": false}
+ESP32 预期行为： 红灯亮，其他灯灭，蜂鸣器关
+mosquitto_pub -h 10.36.224.37 -t "bay/A1/led" -m '{"color":"red","blink":false,"buzzer":false}'
+
+指令5：红灯闪烁 + 蜂鸣（conflict）
+话题：bay/A1/led
+json{"color": "red", "blink": true, "buzzer": true}
+ESP32 预期行为： 红灯约2Hz闪烁，蜂鸣器持续响
+mosquitto_pub -h 10.36.224.37 -t "bay/A1/led" -m '{"color":"red","blink":true,"buzzer":true}'
+
+// 查看当前车位预约数据
+curl http://localhost:8080/status
+
+// 车辆离开
+mosquitto_pub -h localhost -t "bay/A1/status" \     
+  -m '{"occupied":false,"distance_cm":280.0}'
+
+//车辆到达
+mosquitto_pub -h localhost -t "bay/A1/status" \     
+  -m '{"occupied":true,"distance_cm":12.0}'   
+
+// 上传图片
+curl -X POST "http://localhost:8080/upload?bay=A2" \
+  -F "file=@/Users/congyuan/Desktop/speak-retell.png"
+
+// 测试进度
+1、pending_check_in -> auto_check_in
+2、pending_check_in -> strong conflict
+# 3、pending_check_in -> weak conflict
