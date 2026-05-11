@@ -423,12 +423,14 @@ components:
         - pending_check_in
         - check_in_confirmed
         - conflict_strong
-        - conflict_weak
-        - no_show
 
     ReservationActionLiteral:
       type: string
-      enum: [create, cancel, check_in, update_plates]
+      enum: [create, cancel, check_in, update_plates, release, expire_check_in]
+
+    ReservationReleaseReason:
+      type: string
+      enum: [no_show, completed, abandoned, admin_override]
 
     StatePayload:
       type: object
@@ -458,6 +460,10 @@ components:
       type: object
       additionalProperties: false
       required: [event, ts]
+      description: |
+        Pi-originated MQTT event payload. Timeout-driven `conflict_weak`
+        and `no_show` are synthesised internally by the backend reconcile
+        job and are not valid on `cloud/bay/<code>/event`.
       properties:
         event:
           $ref: "#/components/schemas/EventLiteral"
@@ -533,6 +539,14 @@ components:
             Present on every action that carries a reservation (`create`,
             `cancel`, `check_in`, `update_plates`); null only when the
             backend is publishing without a reservation object.
+        reason:
+          allOf:
+            - $ref: "#/components/schemas/ReservationReleaseReason"
+          nullable: true
+          description: |
+            Required when `action="release"`; omitted for all other
+            actions. Distinguishes `no_show`, normal `completed`,
+            `abandoned` cleanup, and future `admin_override` releases.
         ts:
           type: string
           format: date-time
