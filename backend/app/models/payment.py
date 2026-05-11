@@ -1,3 +1,5 @@
+"""Payment-ledger models for deposit holds, penalties, releases, and refunds."""
+
 from __future__ import annotations
 
 import enum
@@ -21,6 +23,8 @@ from app.extensions import db
 
 
 class PaymentAction(str, enum.Enum):
+    """Transaction types emitted by the mock payment service."""
+
     PRE_AUTH = "pre_auth"
     RELEASE = "release"
     REFUND = "refund"
@@ -28,21 +32,25 @@ class PaymentAction(str, enum.Enum):
 
 
 class PaymentStatus(str, enum.Enum):
+    """Persisted result state for a payment-ledger row."""
+
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     VOIDED = "voided"
 
 
 class PenaltyKind(str, enum.Enum):
+    """User-breach categories that can capture part of a deposit hold."""
+
     LATE_CANCEL = "late_cancel"
     NO_SHOW = "no_show"
     WEAK_CONFLICT = "weak_conflict"
-    # NOTE: strong-evidence conflicts are NEVER a user penalty (proposal §5.5).
+    # NOTE: strong-evidence conflicts are NEVER a user penalty.
     # The `payments_penalty_kind_only_for_penalty` CHECK enforces this at the DB.
 
 
 class Payment(db.Model):
-    """Single ledger row for every payment-service action (database-design §3.11).
+    """Single ledger row for every payment-service action.
 
     Idempotent on `idempotency_key`. Each non-`pre_auth` row references its
     parent `pre_auth` via `parent_payment_id`. `penalty_kind` is set iff

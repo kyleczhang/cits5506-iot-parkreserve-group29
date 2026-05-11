@@ -1,3 +1,5 @@
+"""Parking-bay state model mirrored from Raspberry Pi reports."""
+
 from __future__ import annotations
 
 import enum
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
 
 
 class BayState(str, enum.Enum):
+    """Operational states a parking bay can occupy in the backend mirror."""
+
     AVAILABLE = "available"
     RESERVED = "reserved"
     OCCUPIED = "occupied"  # casual parking, no active reservation
@@ -28,6 +32,8 @@ class BayState(str, enum.Enum):
 
 
 class ParkingBay(TimestampMixin, db.Model):
+    """Persisted mirror of one physical parking bay and its live status."""
+
     __tablename__ = "parking_bays"
     __table_args__ = (Index("parking_bays_state_idx", "state"),)
 

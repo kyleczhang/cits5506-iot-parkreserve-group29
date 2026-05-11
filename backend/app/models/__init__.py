@@ -1,3 +1,5 @@
+"""Stable public export surface for SQLAlchemy models and related enums."""
+
 from app.models.bay import BayState, ParkingBay
 from app.models.bay_event import BayEvent, BayEventKind
 from app.models.conflict import Conflict, ConflictKind, ConflictResolution

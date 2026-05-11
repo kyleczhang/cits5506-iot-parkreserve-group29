@@ -1,0 +1,31 @@
+# /etc/caddy/Caddyfile — replace <your-domain> before `systemctl reload caddy`.
+# Caddy auto-issues and renews Let's Encrypt certs for real domains.
+
+<your-domain> {
+    encode zstd gzip
+
+    # Socket.IO long-poll + websocket both live under /ws → proxy transparently.
+    @ws {
+        path /ws /ws/*
+    }
+    reverse_proxy @ws 127.0.0.1:8000 {
+        transport http {
+            versions 1.1
+        }
+    }
+
+    reverse_proxy 127.0.0.1:8000
+
+    # Basic security headers; the app also sets CORS itself.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    "nosniff"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/parkreserve.access.log
+        format console
+    }
+}
