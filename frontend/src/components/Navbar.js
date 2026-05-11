@@ -1,6 +1,18 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 function Navbar() {
+
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+
+    // Clear stored user session data
+    localStorage.removeItem("vehiclePlate");
+
+    navigate("/");
+
+  };
+
   return (
     <nav
       style={{
@@ -13,8 +25,14 @@ function Navbar() {
         boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
       }}
     >
+
       {/* Left Side */}
-      <div style={{ display: "flex", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center"
+        }}
+      >
 
         <img
           src="/logo.png"
@@ -46,18 +64,22 @@ function Navbar() {
           Dashboard
         </Link>
 
-        <Link
-          to="/"
+        <button
+          onClick={handleLogout}
           style={{
+            background: "none",
+            border: "none",
             color: "white",
-            textDecoration: "none",
-            fontWeight: "bold"
+            fontWeight: "bold",
+            cursor: "pointer",
+            fontSize: "16px"
           }}
         >
           Logout
-        </Link>
+        </button>
 
       </div>
+
     </nav>
   );
 }
