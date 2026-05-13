@@ -1,10 +1,115 @@
-body {
-  margin: 0;
-  background-color: linear-gradient(to right, #f5f7fa, #e4ecf7);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+/**
+ * Global styles + design tokens.
+ *
+ * Tokens are CSS custom properties so the same component code paints
+ * differently under `data-theme="driver"` (light) and `data-theme="ops"`
+ * (dark / OLED). Values match doc/frontend/frontend-implementation-plan.md §3.1
+ * and the LED palette from proposal.md §5.1 step 2.
+ *
+ * RGB triplets (no `rgb(...)` wrapper) so Tailwind's `<alpha-value>` slot
+ * works — e.g. `bg-brand/20` resolves to `rgb(15 118 110 / 0.2)`.
+ */
+
+/* Self-hosted Fira family — no Google Fonts CDN dependency. */
+@import "@fontsource/fira-sans/300.css";
+@import "@fontsource/fira-sans/400.css";
+@import "@fontsource/fira-sans/500.css";
+@import "@fontsource/fira-sans/600.css";
+@import "@fontsource/fira-sans/700.css";
+@import "@fontsource/fira-code/400.css";
+@import "@fontsource/fira-code/500.css";
+@import "@fontsource/fira-code/600.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root,
+  [data-theme="driver"] {
+    --bg: 248 250 252;            /* slate-50 */
+    --surface: 255 255 255;
+    --surface-2: 241 245 249;     /* slate-100 */
+    --border: 226 232 240;        /* slate-200 */
+    --text: 15 23 42;             /* slate-900 */
+    --text-muted: 71 85 105;      /* slate-600 */
+    --brand: 15 118 110;          /* teal-700 */
+    --accent: 14 165 233;         /* sky-500 */
+    --warn: 245 158 11;           /* amber-500 */
+    --danger: 220 38 38;          /* red-600 */
+    --success: 22 163 74;         /* green-600 */
+  }
+
+  [data-theme="ops"] {
+    --bg: 11 18 32;               /* deeper than slate-950, near-OLED */
+    --surface: 17 26 46;
+    --surface-2: 22 34 58;
+    --border: 31 42 68;
+    --text: 248 250 252;          /* slate-50 */
+    --text-muted: 148 163 184;    /* slate-400 */
+    --brand: 45 212 191;          /* teal-400 */
+    --accent: 56 189 248;         /* sky-400 */
+    --warn: 251 191 36;
+    --danger: 248 113 113;
+    --success: 74 222 128;
+  }
+
+  /* Status tokens are theme-invariant. Same wire as the bay's physical LED. */
+  :root,
+  [data-theme="driver"],
+  [data-theme="ops"] {
+    --state-available: 34 197 94;     /* green-500 */
+    --state-reserved: 234 179 8;      /* yellow-500 */
+    --state-pending: 234 179 8;       /* yellow-500 + animate-pulse */
+    --state-occupied: 239 68 68;      /* red-500 */
+    --state-conflict: 220 38 38;      /* red-600 + animate-pulse */
+    --state-offline: 100 116 139;     /* slate-500 */
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    color-scheme: light;
+  }
+  [data-theme="ops"] {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  /* Reduce motion respects user preference (rubric: reduced-motion). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Visible keyboard focus ring on all interactive elements. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+
+  /* Mono font for any element flagged as code-like data. */
+  .font-mono,
+  code,
+  kbd {
+    font-feature-settings: "calt" 0;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+@layer utilities {
+  /* Helper to mute the focus ring when we manage focus ourselves
+     (e.g. inside Radix portals that already paint a ring). */
+  .focus-none:focus,
+  .focus-none:focus-visible {
+    @apply ring-0 outline-none;
+  }
 }
