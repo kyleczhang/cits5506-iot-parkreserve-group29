@@ -36,7 +36,8 @@ def _bay_payload(bay: ParkingBay) -> dict[str, Any]:
     return {
         "code": bay.code,
         "label": bay.label,
-        "state": bay.state.value,
+        "state": bay.public_state().value,
+        "mirror_state": bay.state.value,
         "last_distance_cm": (
             float(bay.last_distance_cm) if bay.last_distance_cm is not None else None
         ),

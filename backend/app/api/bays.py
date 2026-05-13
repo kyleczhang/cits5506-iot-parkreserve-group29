@@ -20,7 +20,8 @@ def _serialize(bay) -> dict:
     return BayOut(
         code=bay.code,
         label=bay.label,
-        state=bay.state.value,
+        state=bay.public_state().value,
+        mirror_state=bay.state.value,
         last_distance_cm=bay.last_distance_cm,
         sensor_last_seen_at=bay.sensor_last_seen_at,
         current_reservation_id=str(current.id) if current else None,
