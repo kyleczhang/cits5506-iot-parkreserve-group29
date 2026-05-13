@@ -76,5 +76,17 @@ class ParkingBay(TimestampMixin, db.Model):
         foreign_keys="Reservation.bay_id",
     )
 
+    def public_state(self) -> BayState:
+        """State exposed to clients deciding whether a bay is bookable.
+
+        The Pi may continue to mirror an empty sensor as ``available`` while
+        the backend already holds an ACTIVE reservation on the bay. In that
+        transient but user-visible case, keep exposing the bay as
+        ``reserved`` so dashboards do not offer it for rebooking.
+        """
+        if self.state == BayState.AVAILABLE and self.current_reservation_id is not None:
+            return BayState.RESERVED
+        return self.state
+
     def __repr__(self) -> str:
         return f"<ParkingBay {self.code} {self.state.value}>"

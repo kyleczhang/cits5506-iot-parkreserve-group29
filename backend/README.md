@@ -44,6 +44,12 @@ Then start the backend:
 make dev                # web + MQTT + jobs on :8000
 ```
 
+Or, if you want to fully reset the local stack and immediately boot the backend in one go:
+
+```bash
+make reset-run          # make down -> make up -> make migrate -> make seed -> make dev
+```
+
 ## Demo scenarios
 
 The seed runner is designed for **repeatable demos**. Every seed command clears

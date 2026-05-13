@@ -39,6 +39,11 @@ class ConflictResolution(str, enum.Enum):
     USER_ARRIVED_AND_CHECKED_IN = "user_arrived_and_checked_in"  # only valid for kind='weak'
     VEHICLE_LEFT = "vehicle_left"
     ADMIN_RESOLVED = "admin_resolved"
+    # Holder cancelled their reservation while a strong conflict was open on
+    # the bay (the wrong vehicle was still physically present). Distinct from
+    # ADMIN_RESOLVED so the audit trail can tell facility action apart from a
+    # victim's voluntary cancel.
+    USER_CANCELLED = "user_cancelled"
 
 
 class Conflict(db.Model):

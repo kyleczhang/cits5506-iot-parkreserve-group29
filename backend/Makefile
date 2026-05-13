@@ -1,4 +1,4 @@
-.PHONY: help install dev up down migrate revision seed seed-demo seed-ready seed-conflict seed-checked-in seed-history test lint fmt clean
+.PHONY: help install dev up down migrate revision seed seed-demo seed-ready seed-conflict seed-checked-in seed-history reset-run test lint fmt clean
 
 help:
 	@echo "make install        - create venv and install deps"
@@ -12,6 +12,7 @@ help:
 	@echo "make seed-conflict  - load demo + strong-conflict demo scenario"
 	@echo "make seed-checked-in - load demo + checked-in reservation scenario"
 	@echo "make seed-history   - load demo + payment-history scenario"
+	@echo "make reset-run      - down + up + migrate + seed + dev"
 	@echo "make dev            - run the backend process (HTTP + Socket.IO + MQTT + jobs)"
 	@echo "make test           - run pytest against a real postgres cluster"
 	@echo "make lint           - ruff + mypy"
@@ -51,6 +52,13 @@ seed-checked-in:
 
 seed-history:
 	.venv/bin/python scripts/seed.py --dataset payments_history
+
+reset-run:
+	$(MAKE) down
+	$(MAKE) up
+	$(MAKE) migrate
+	$(MAKE) seed
+	$(MAKE) dev
 
 dev:
 	.venv/bin/python -m app.web

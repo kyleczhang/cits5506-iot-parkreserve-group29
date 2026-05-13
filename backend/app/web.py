@@ -2,14 +2,23 @@
 
 Runs HTTP + Socket.IO and also starts inbound MQTT plus APScheduler jobs
 inside the same process.
+
+``eventlet.monkey_patch()`` MUST run before anything imports ``threading``
+or ``paho.mqtt`` — otherwise paho's ``loop_start()`` spins up a real OS
+thread whose ``socketio.emit`` calls can't reach connected clients (no
+message queue is configured). Keep this import at the very top.
 """
 
 from __future__ import annotations
 
-import os
+import eventlet
 
-from app import create_wsgi_app, stop_runtime_services
-from app.extensions import socketio
+eventlet.monkey_patch()
+
+import os  # noqa: E402
+
+from app import create_wsgi_app, stop_runtime_services  # noqa: E402
+from app.extensions import socketio  # noqa: E402
 
 
 def main() -> None:
