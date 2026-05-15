@@ -378,3 +378,14 @@ mosquitto_sub -h localhost -t "cloud/#"
    4. conflict_strong → 车辆离开 → Backend 恢复预约
    5. no_show（预约到期无车）
    6. 完整三方联调（ESP32 + Pi + Backend）
+
+
+
+
+
+   1、能否取消pending中间过程，直接conflict或者auto 
+   2、能否不要有任何grace ,改成半小时，改名称和注释说明，删掉no show代码
+   3、手动改车牌
+   4、端口号5000或者8080， 还有测试模式和真实模式
+
+   5、改代码注释成英文

@@ -53,7 +53,7 @@ from config.settings import (
     CLOUD_TOPIC_RESERVATION, CLOUD_TOPIC_RESYNC,
     IMAGE_RECEIVER_HOST, IMAGE_RECEIVER_PORT, IMAGE_UPLOAD_DIR,
     ALPR_MIN_CONFIDENCE,
-    NO_SHOW_GRACE_SECONDS, MANUAL_CHECKIN_GRACE_SECONDS,
+    PI_NO_SHOW_TIMEOUT_SECONDS, PI_CHECKIN_WAIT_TIMEOUT_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS, PI_ID, BAY_CODES,
 )
 from services.state_machine import BayStateMachine, BayState, Reservation, BayEvent
@@ -145,8 +145,8 @@ class ControlService:
                 on_led_command=self._publish_led_command,
                 on_event=self._publish_event,
                 on_state_changed=self._publish_state,
-                manual_checkin_grace=MANUAL_CHECKIN_GRACE_SECONDS,
-                no_show_grace=NO_SHOW_GRACE_SECONDS,
+                manual_checkin_grace=PI_CHECKIN_WAIT_TIMEOUT_SECONDS,
+                no_show_grace=PI_NO_SHOW_TIMEOUT_SECONDS,
                 alpr_min_confidence=ALPR_MIN_CONFIDENCE,
             )
             for code in BAY_CODES
