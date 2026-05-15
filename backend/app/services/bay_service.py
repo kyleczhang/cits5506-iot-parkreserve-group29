@@ -5,20 +5,29 @@ The Pi owns the per-bay state machine; this service only
 that writes ``parking_bays.state`` and always produces a ``bay_events`` row in
 the same transaction.
 
-Two inferences run on a state change back to ``available``:
+Three inferences run on a state change:
 
 * **Reservation completion** — when the previous state was a held-by-user
-  state (``reserved_checked_in`` / ``pending_check_in``), any open
-  ``CHECKED_IN`` / ``PENDING_CHECK_IN`` / ``IN_CONFLICT`` reservation is
-  closed as ``COMPLETED``.
+  state (``reserved_checked_in`` / ``pending_check_in``) and the new state is
+  ``available``, any open ``CHECKED_IN`` / ``PENDING_CHECK_IN`` /
+  ``IN_CONFLICT`` reservation is closed as ``COMPLETED``.
 * **Strong-conflict restore** — when the previous state was ``conflict`` and
   the open conflict on this bay is ``kind='strong'`` with a still-open
-  reservation (``ACTIVE`` or ``CHECKED_IN``), the wrong vehicle has driven
-  away. The conflict resolves as ``vehicle_left``, the bay mirror is locally
-  flipped back to ``RESERVED`` / ``RESERVED_CHECKED_IN`` so the no-show
-  sweeper doesn't trip on the transient ``AVAILABLE``, and the reservation
-  cache is republished to the Pi. No refund, no release — the reservation
-  simply resumes.
+  reservation (``ACTIVE`` / ``CHECKED_IN`` / ``PENDING_CHECK_IN``), the wrong
+  vehicle has driven away. The conflict resolves as ``vehicle_left``, the bay
+  mirror is locally flipped back to ``RESERVED`` / ``RESERVED_CHECKED_IN`` so
+  the no-show sweeper doesn't trip on the transient ``AVAILABLE``, and the
+  reservation cache is republished to the Pi. No refund, no release — the
+  reservation simply resumes. A ``PENDING_CHECK_IN`` reservation is rolled
+  back to ``ACTIVE`` (the holder hasn't actually arrived). Handles both
+  ``CONFLICT → AVAILABLE`` and the Pi-skipped ``CONFLICT → RESERVED``
+  transition.
+* **Pending-check-in rollback** — when the previous state was
+  ``pending_check_in`` and the bay returns directly to ``reserved`` (an
+  unknown vehicle arrived and left without LPR ever firing a
+  ``conflict_strong``), the open ``PENDING_CHECK_IN`` reservation is rolled
+  back to ``ACTIVE`` and the Pi reservation cache is republished. Without
+  this the reservation would stay stuck in ``PENDING_CHECK_IN`` forever.
 """
 
 from __future__ import annotations
@@ -140,6 +149,26 @@ def apply_state(*, bay_code: str, payload: StatePayload) -> None:
             )
             return
 
+        # No-conflict rollback: an unknown vehicle visited the bay
+        # (PENDING_CHECK_IN) and left without LPR ever firing
+        # `conflict_strong`. Roll the reservation back to ACTIVE so the
+        # holder can still arrive.
+        rolled_back = _maybe_rollback_pending_check_in(
+            bay, old_state=old_state, new_state=new_state
+        )
+        if rolled_back is not None:
+            db.session.commit()
+            push_bay_updated(bay)
+            push_reservation_updated(rolled_back, bay)
+            publish_reservation_command(
+                bay_code=bay.code,
+                action="create",
+                reservation=rolled_back,
+                user=rolled_back.user,
+                bound_plates=plate_service.list_plate_strings(rolled_back.user_id),
+            )
+            return
+
         completed_reservation = _maybe_complete_reservation(
             bay, old_state=old_state, new_state=new_state
         )
@@ -193,9 +222,13 @@ class _StrongConflictRestore:
 def _maybe_restore_after_strong_conflict(
     bay: ParkingBay, *, old_state: BayState, new_state: BayState
 ) -> _StrongConflictRestore | None:
-    """``CONFLICT → AVAILABLE`` with an open strong conflict + open reservation
-    means the wrong vehicle drove away. Resolve the conflict as
-    ``vehicle_left`` and resume the reservation; do **not** complete it.
+    """``CONFLICT → {AVAILABLE, RESERVED}`` with an open strong conflict +
+    open reservation means the wrong vehicle drove away. Resolve the conflict
+    as ``vehicle_left`` and resume the reservation; do **not** complete it.
+
+    Accepts the Pi-skipped ``CONFLICT → RESERVED`` transition (when the
+    sensor jumps straight to "empty + held") in addition to the canonical
+    ``CONFLICT → AVAILABLE``.
 
     Returns the restored reservation + conflict + republish action so the
     caller can fire the matching Pi command and notifications. Returns
@@ -203,7 +236,9 @@ def _maybe_restore_after_strong_conflict(
     conflict, weak conflict, or reservation not in a resumable status) —
     completion inference will then run on its usual rules.
     """
-    if old_state != BayState.CONFLICT or new_state != BayState.AVAILABLE:
+    if old_state != BayState.CONFLICT:
+        return None
+    if new_state not in {BayState.AVAILABLE, BayState.RESERVED, BayState.RESERVED_CHECKED_IN}:
         return None
 
     # At most one unresolved conflict per bay (partial unique index
@@ -222,10 +257,20 @@ def _maybe_restore_after_strong_conflict(
     reservation = db.session.get(Reservation, conflict.reservation_id)
     if reservation is None:
         return None
-    # Strong-conflict resumable statuses: ACTIVE (vehicle hadn't arrived,
-    # or rolled back from PENDING_CHECK_IN) or CHECKED_IN (incident layered
-    # on a live session). IN_CONFLICT belongs to weak only.
-    if reservation.status == ReservationStatus.ACTIVE:
+    # Strong-conflict resumable statuses: ACTIVE (vehicle hadn't arrived, or
+    # already rolled back from PENDING_CHECK_IN by the conflict_strong
+    # handler), CHECKED_IN (incident layered on a live session), or
+    # PENDING_CHECK_IN (defensive: the rollback step in the conflict_strong
+    # handler didn't run — e.g. the conflict_strong event was dropped or
+    # arrived out of order. Treat as ACTIVE since the wrong vehicle is now
+    # confirmed gone). IN_CONFLICT belongs to weak only.
+    if reservation.status in {ReservationStatus.ACTIVE, ReservationStatus.PENDING_CHECK_IN}:
+        if reservation.status == ReservationStatus.PENDING_CHECK_IN:
+            reservation.status = ReservationStatus.ACTIVE
+            reservation.check_in_grace_expires_at = None
+        now_ = utcnow()
+        if reservation.expected_arrival_time < now_:
+            reservation.expected_arrival_time = now_
         target_state = BayState.RESERVED
         publish_action: ReservationActionLiteral = "create"
     elif reservation.status == ReservationStatus.CHECKED_IN:
@@ -238,19 +283,24 @@ def _maybe_restore_after_strong_conflict(
     conflict.resolved_at = now
     conflict.resolution = ConflictResolution.VEHICLE_LEFT
 
-    # Flip the bay mirror locally so the no-show sweeper's
-    # `ACTIVE + AVAILABLE` filter doesn't fire on the transient AVAILABLE.
-    # Pi's next /state message will idempotently reconcile back to whatever
-    # the sensor actually reports.
-    bay.state = target_state
-    event_service.record(
-        bay_id=bay.id,
-        kind=BayEventKind.STATE_CHANGED,
-        from_state=BayState.AVAILABLE,
-        to_state=target_state,
-        reservation_id=reservation.id,
-        payload={"reason": "strong_conflict_cleared"},
-    )
+    # Flip the bay mirror locally back to RESERVED/RESERVED_CHECKED_IN so the
+    # UI and admin tooling see the resumed reservation immediately rather than
+    # the transient AVAILABLE. Pi's next /state message will idempotently
+    # reconcile back to whatever the sensor actually reports.
+    if bay.state != target_state:
+        # Only record the synthetic transition when we actually flip — for
+        # CONFLICT → RESERVED the Pi already reported `target_state`, so the
+        # row recorded in `apply_state` is sufficient.
+        from_state = bay.state
+        bay.state = target_state
+        event_service.record(
+            bay_id=bay.id,
+            kind=BayEventKind.STATE_CHANGED,
+            from_state=from_state,
+            to_state=target_state,
+            reservation_id=reservation.id,
+            payload={"reason": "strong_conflict_cleared"},
+        )
     event_service.record(
         bay_id=bay.id,
         kind=BayEventKind.CONFLICT_RESOLVED,
@@ -265,6 +315,39 @@ def _maybe_restore_after_strong_conflict(
         reservation=reservation,
         publish_action=publish_action,
     )
+
+
+def _maybe_rollback_pending_check_in(
+    bay: ParkingBay, *, old_state: BayState, new_state: BayState
+) -> Reservation | None:
+    """``PENDING_CHECK_IN → RESERVED`` with an open ``PENDING_CHECK_IN``
+    reservation: an unknown vehicle arrived and left without LPR ever firing
+    a ``conflict_strong`` (so the conflict-restore path didn't run). Roll
+    the reservation back to ``ACTIVE`` so the holder can still arrive.
+
+    Returns the rolled-back reservation so the caller can republish the
+    ``create`` command to the Pi and notify the holder. Returns ``None``
+    when this is not a rollback situation — the standard completion
+    inference (``PENDING_CHECK_IN → AVAILABLE``) is unchanged.
+    """
+    if old_state != BayState.PENDING_CHECK_IN or new_state != BayState.RESERVED:
+        return None
+
+    reservation = db.session.execute(
+        select(Reservation).where(
+            Reservation.bay_id == bay.id,
+            Reservation.status == ReservationStatus.PENDING_CHECK_IN,
+        )
+    ).scalar_one_or_none()
+    if reservation is None:
+        return None
+
+    reservation.status = ReservationStatus.ACTIVE
+    reservation.check_in_grace_expires_at = None
+    # No synthetic STATE_CHANGED row: `apply_state` already records the
+    # Pi-reported PENDING_CHECK_IN → RESERVED transition. This rollback is
+    # purely a reservation-status change.
+    return reservation
 
 
 def _maybe_complete_reservation(
