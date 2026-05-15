@@ -241,7 +241,8 @@ def test_sweeper_does_not_no_show_after_strong_conflict_cleared(
 ):
     """Even with `expected_arrival_time` long past, after a strong-conflict
     clear the reconcile sweeper must NOT synthesise no_show. This locks down
-    the "flip bay mirror back to RESERVED" implementation decision."""
+    the "extend the user's arrival window on conflict-clear" decision —
+    otherwise the user would be punished for the wrong vehicle's blockage."""
     monkeypatch.setattr(
         "app.services.bay_service.publish_reservation_command",
         lambda **kwargs: None,
@@ -793,3 +794,187 @@ def test_conflict_to_available_does_not_complete_strong_active_reservation(
         )
         assert "release" not in actions
         assert "refund" not in actions
+
+
+# ---------------------------------------------------------------------------
+# Pi-skipped AVAILABLE and lost conflict_strong event
+# ---------------------------------------------------------------------------
+
+
+def test_strong_conflict_cleared_via_direct_reserved_transition(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+    monkeypatch,
+):
+    """Pi may report CONFLICT → RESERVED directly (no transient AVAILABLE).
+    The strong-restore path must still resolve the conflict and resume the
+    reservation."""
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.bay_service.publish_reservation_command",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    _add_preauth(session, reservation, mock_cards[0])
+
+    with app.app_context():
+        dispatch_event(bay_code="A1", payload=_strong_conflict_event())
+        # Skip AVAILABLE — Pi jumps straight back to RESERVED.
+        apply_state(bay_code="A1", payload=_state("reserved"))
+
+        bay = db.session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+        assert bay.state == BayState.RESERVED
+
+        res = db.session.get(Reservation, reservation.id)
+        assert res.status == ReservationStatus.ACTIVE
+        assert res.completed_at is None
+
+        conflict = db.session.execute(db.select(Conflict)).scalar_one()
+        assert conflict.resolution == ConflictResolution.VEHICLE_LEFT
+
+    assert len(published) == 1
+    assert published[0]["action"] == "create"
+    assert published[0]["reservation"].id == reservation.id
+
+
+def test_strong_conflict_cleared_defends_pending_check_in_when_event_lost(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+    monkeypatch,
+):
+    """If the conflict_strong event was dropped or arrived out of order so
+    the reservation is still PENDING_CHECK_IN when the wrong vehicle leaves,
+    the restore path must still roll it back to ACTIVE."""
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.bay_service.publish_reservation_command",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    _add_preauth(session, reservation, mock_cards[0])
+    # Simulate the desync: reservation is PENDING_CHECK_IN, bay is CONFLICT,
+    # and an open strong conflict row already exists — exactly the state we
+    # would land in if the conflict_strong dispatcher had crashed mid-handler.
+    reservation.status = ReservationStatus.PENDING_CHECK_IN
+    reservation.check_in_grace_expires_at = utcnow() + timedelta(minutes=5)
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.CONFLICT
+    session.add(
+        Conflict(
+            bay_id=bay.id,
+            reservation_id=reservation.id,
+            kind=ConflictKind.STRONG,
+            source_event_id=uuid4(),
+            detected_at=utcnow(),
+            recognised_plate="ZZZ999",
+        )
+    )
+    session.commit()
+
+    with app.app_context():
+        apply_state(bay_code="A1", payload=_state("available"))
+
+        res = db.session.get(Reservation, reservation.id)
+        assert res.status == ReservationStatus.ACTIVE
+        assert res.check_in_grace_expires_at is None
+
+        conflict = db.session.execute(db.select(Conflict)).scalar_one()
+        assert conflict.resolution == ConflictResolution.VEHICLE_LEFT
+
+    assert len(published) == 1
+    assert published[0]["action"] == "create"
+
+
+# ---------------------------------------------------------------------------
+# No-conflict pending_check_in rollback
+# ---------------------------------------------------------------------------
+
+
+def test_pending_check_in_to_reserved_rolls_back_to_active(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+    monkeypatch,
+):
+    """An unknown vehicle visited the bay (so the Pi raised pending_check_in)
+    but left before LPR ever fired conflict_strong. The bay returns directly
+    to RESERVED — the reservation must roll back to ACTIVE instead of
+    staying stuck in PENDING_CHECK_IN."""
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.bay_service.publish_reservation_command",
+        lambda **kwargs: published.append(kwargs),
+    )
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    _add_preauth(session, reservation, mock_cards[0])
+    reservation.status = ReservationStatus.PENDING_CHECK_IN
+    reservation.check_in_grace_expires_at = utcnow() + timedelta(minutes=5)
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.PENDING_CHECK_IN
+    session.commit()
+
+    with app.app_context():
+        apply_state(bay_code="A1", payload=_state("reserved"))
+
+        bay = db.session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+        assert bay.state == BayState.RESERVED
+
+        res = db.session.get(Reservation, reservation.id)
+        assert res.status == ReservationStatus.ACTIVE
+        assert res.check_in_grace_expires_at is None
+        assert res.completed_at is None
+
+        # No conflict rows manufactured — there was never a conflict_strong.
+        conflicts = db.session.execute(db.select(Conflict)).scalars().all()
+        assert conflicts == []
+
+        # No release / refund — the reservation is still live.
+        actions = sorted(
+            p.action.value for p in db.session.execute(db.select(Payment)).scalars().all()
+        )
+        assert actions == ["pre_auth"]
+
+    assert len(published) == 1
+    assert published[0]["bay_code"] == "A1"
+    assert published[0]["action"] == "create"
+    assert published[0]["reservation"].id == reservation.id
+    assert published[0]["bound_plates"] == ["ABC123", "XYZ789"]
+
+
+def test_pending_check_in_to_available_still_completes(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    monkeypatch,
+):
+    """Guard: PENDING_CHECK_IN → AVAILABLE remains the completion path. The
+    new rollback helper must not fire on this transition."""
+    monkeypatch.setattr(
+        "app.services.bay_service.publish_reservation_command",
+        lambda **kwargs: None,
+    )
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    reservation.status = ReservationStatus.PENDING_CHECK_IN
+    reservation.check_in_grace_expires_at = utcnow() + timedelta(minutes=5)
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.PENDING_CHECK_IN
+    session.commit()
+
+    with app.app_context():
+        apply_state(bay_code="A1", payload=_state("available"))
+
+        res = db.session.get(Reservation, reservation.id)
+        assert res.status == ReservationStatus.COMPLETED

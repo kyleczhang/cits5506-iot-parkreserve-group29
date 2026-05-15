@@ -61,7 +61,7 @@ reset-run:
 	$(MAKE) dev
 
 dev:
-	.venv/bin/python -m app.web
+	.venv/bin/python run_dev.py
 
 test:
 	.venv/bin/pytest

@@ -3,22 +3,21 @@
 Runs HTTP + Socket.IO and also starts inbound MQTT plus APScheduler jobs
 inside the same process.
 
-``eventlet.monkey_patch()`` MUST run before anything imports ``threading``
-or ``paho.mqtt`` — otherwise paho's ``loop_start()`` spins up a real OS
-thread whose ``socketio.emit`` calls can't reach connected clients (no
-message queue is configured). Keep this import at the very top.
+Note: ``eventlet.monkey_patch()`` MUST run **before** anything imports
+the ``app`` package — otherwise werkzeug/flask LocalProxy objects already
+created during ``app/__init__.py`` blow up eventlet's
+"upgrade existing instances" pass, and at least one RLock ends up
+un-greened. Use [run_dev.py](../run_dev.py) (top-level entrypoint) to
+launch the dev server; importing this module directly via
+``python -m app.web`` is no longer supported.
 """
 
 from __future__ import annotations
 
-import eventlet
+import os
 
-eventlet.monkey_patch()
-
-import os  # noqa: E402
-
-from app import create_wsgi_app, stop_runtime_services  # noqa: E402
-from app.extensions import socketio  # noqa: E402
+from app import create_wsgi_app, stop_runtime_services
+from app.extensions import socketio
 
 
 def main() -> None:

@@ -11,7 +11,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarClock, Car, ParkingSquare } from "lucide-react";
+import { AlertOctagon, CalendarClock, Car, ParkingSquare } from "lucide-react";
 
 import { listBays } from "@/api/bays";
 import { listReservations } from "@/api/reservations";
@@ -44,6 +44,16 @@ export function DriverHome() {
         .slice(0, HOME_RESERVATIONS_LIMIT),
     [reservations.data],
   );
+  // Strong conflict keeps the reservation `active` by design (a wrong
+  // vehicle is at the bay but the driver may still arrive once it leaves
+  // — see CLAUDE.md "Conflict semantics"). Cross-reference the live bay
+  // state so the card surfaces the incident without lying about the
+  // reservation lifecycle.
+  const bayStateByCode = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of bays.data ?? []) m.set(b.code, b.state);
+    return m;
+  }, [bays.data]);
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
@@ -139,7 +149,17 @@ export function DriverHome() {
           </Card>
         ) : (
           <ul className="flex flex-col gap-3">
-            {recentReservations.map((r) => (
+            {recentReservations.map((r) => {
+              const isNonTerminal =
+                r.status === "active" ||
+                r.status === "pending_check_in" ||
+                r.status === "checked_in" ||
+                r.status === "in_conflict";
+              const bayInConflict =
+                isNonTerminal &&
+                bayStateByCode.get(r.bay_code) === "conflict" &&
+                r.status !== "in_conflict";
+              return (
               <li key={r.id}>
                 <Card
                   interactive
@@ -164,8 +184,26 @@ export function DriverHome() {
                         Booked {formatRelative(r.booked_at)}
                       </p>
                     </div>
-                    <ReservationStatusBadge status={r.status} variant="compact" />
+                    <div className="flex flex-col items-end gap-1.5">
+                      <ReservationStatusBadge status={r.status} variant="compact" />
+                      {bayInConflict ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-state-conflict/15 px-2 py-0.5 text-[11px] font-medium text-state-conflict"
+                          role="status"
+                          aria-label="Bay is in conflict"
+                        >
+                          <AlertOctagon aria-hidden="true" className="h-3 w-3" />
+                          Bay in conflict
+                        </span>
+                      ) : null}
+                    </div>
                   </header>
+                  {bayInConflict ? (
+                    <p className="mt-2 text-xs text-state-conflict">
+                      Another vehicle is at your bay. Your reservation is being
+                      held while staff investigate.
+                    </p>
+                  ) : null}
                   <dl className="mt-3 grid grid-cols-2 gap-y-1 text-xs">
                     <dt className="flex items-center gap-1 text-text-muted">
                       <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
@@ -188,7 +226,8 @@ export function DriverHome() {
                   </dl>
                 </Card>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>
