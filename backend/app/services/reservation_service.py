@@ -44,6 +44,7 @@ from app.models import (
     Reservation,
     ReservationStatus,
     User,
+    UserRole,
 )
 from app.schemas.payment import CardDetails
 from app.services import (
@@ -55,8 +56,10 @@ from app.services import (
 from app.services.mqtt_publisher import publish_reservation_command
 from app.services.notification_service import (
     push_bay_updated,
+    push_conflict_resolved,
     push_deposit_released,
     push_penalty_captured,
+    push_refund_issued,
     push_reservation_updated,
 )
 from app.utils.errors import (
@@ -199,6 +202,28 @@ def cancel(*, user: User, reservation_id: UUID, now: datetime | None = None) -> 
             code="reservation_not_cancellable",
         )
 
+    # No-fault branch: the holder is the victim of an unresolved *strong*
+    # conflict (a wrong vehicle is physically occupying their bay). Routing
+    # this through the normal late-cancel path would charge a penalty for a
+    # situation the user didn't cause and would also leave the open conflict
+    # row dangling. Refund in full, resolve the conflict, and leave bay state
+    # for the Pi's next /state — the wrong vehicle is still there, so we
+    # must not invent a phantom AVAILABLE.
+    open_strong_conflict = db.session.execute(
+        select(Conflict).where(
+            Conflict.reservation_id == reservation.id,
+            Conflict.resolved_at.is_(None),
+            Conflict.kind == ConflictKind.STRONG,
+        )
+    ).scalar_one_or_none()
+    if open_strong_conflict is not None:
+        return _cancel_no_fault_under_strong_conflict(
+            user=user,
+            reservation=reservation,
+            conflict=open_strong_conflict,
+            now=now,
+        )
+
     cutoff = settings.late_cancel_cutoff_minutes * 60
     is_late = (reservation.expected_arrival_time - now).total_seconds() < cutoff
 
@@ -276,6 +301,72 @@ def cancel(*, user: User, reservation_id: UUID, now: datetime | None = None) -> 
             reservation=reservation,
             penalty_kind=PenaltyKind.LATE_CANCEL,
             amount_cents=penalty_payment.amount_cents,
+        )
+    return reservation
+
+
+def _cancel_no_fault_under_strong_conflict(
+    *,
+    user: User,
+    reservation: Reservation,
+    conflict: Conflict,
+    now: datetime,
+) -> Reservation:
+    """Cancel branch for "wrong vehicle is in my bay; let me out, no charge."
+
+    Mirrors the relevant pieces of :func:`admin_terminate` — full refund,
+    conflict resolved, ``release(reason="admin_override")`` published — but
+    leaves ``bay.state`` untouched. The wrong vehicle is still physically
+    present, so flipping the mirror to ``AVAILABLE`` here would mis-advertise
+    a free bay; the Pi's next ``/state`` will reconcile when the wrong
+    vehicle eventually leaves.
+    """
+    bay = reservation.bay
+
+    conflict.resolved_at = now
+    conflict.resolution = ConflictResolution.USER_CANCELLED
+
+    reservation.status = ReservationStatus.CANCELLED
+    reservation.cancelled_at = now
+    if bay.current_reservation_id == reservation.id:
+        bay.current_reservation_id = None
+
+    event_service.record(
+        bay_id=bay.id,
+        kind=BayEventKind.RESERVATION_CANCELLED,
+        reservation_id=reservation.id,
+        payload={"reason": "user_cancel_under_strong_conflict"},
+    )
+    event_service.record(
+        bay_id=bay.id,
+        kind=BayEventKind.CONFLICT_RESOLVED,
+        reservation_id=reservation.id,
+        payload={
+            "conflict_id": str(conflict.id),
+            "resolution": ConflictResolution.USER_CANCELLED.value,
+        },
+    )
+
+    refund_payment = payment_service.refund(reservation_id=reservation.id)
+
+    db.session.commit()
+
+    publish_reservation_command(
+        bay_code=bay.code,
+        action="release",
+        reservation=reservation,
+        user=user,
+        bound_plates=plate_service.list_plate_strings(user.id),
+        reason="admin_override",
+    )
+    push_conflict_resolved(conflict=conflict, bay=bay)
+    push_reservation_updated(reservation, bay)
+    push_bay_updated(bay)
+    if refund_payment is not None:
+        push_refund_issued(
+            user=user,
+            reservation=reservation,
+            amount_cents=refund_payment.amount_cents,
         )
     return reservation
 
@@ -368,6 +459,170 @@ def check_in(
     )
     push_reservation_updated(reservation, bay)
     push_bay_updated(bay)
+    return reservation
+
+
+# ---------------------------------------------------------------------------
+# Admin termination (facility-side cancellation + refund)
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_RESERVATION_STATUSES = {
+    ReservationStatus.CANCELLED,
+    ReservationStatus.CANCELLED_LATE,
+    ReservationStatus.COMPLETED,
+    ReservationStatus.EXPIRED_NO_SHOW,
+}
+
+# Bay states whose physical occupancy belongs to the holder (no other
+# vehicle is present). Safe to flip back to AVAILABLE locally on admin
+# termination — the Pi's next ``/state`` will idempotently reconcile.
+_HOLDER_OWNED_BAY_STATES = {
+    BayState.RESERVED,
+    BayState.PENDING_CHECK_IN,
+    BayState.RESERVED_CHECKED_IN,
+}
+
+
+def admin_terminate(
+    *,
+    admin: User,
+    reservation_id: UUID,
+    now: datetime | None = None,
+) -> Reservation:
+    """Admin-initiated termination of a reservation.
+
+    This is the *only* path that issues a refund on a strong-conflict
+    reservation. The ``conflict_strong`` event itself never refunds — see
+    [event_dispatcher._on_conflict_strong][app.services.event_dispatcher].
+
+    Bay-mirror release is **narrowed** to states the holder genuinely
+    owns. CONFLICT + STRONG / OCCUPIED / OFFLINE deliberately leave
+    ``bay.state`` alone — flipping AVAILABLE there would either advertise
+    a bay that's still physically blocked by the wrong vehicle (strong
+    conflict) or fight the Pi's authoritative state. ``CONFLICT + WEAK`` is
+    treated as holder-owned because weak conflicts are a deferred user
+    breach with no third-party vehicle present.
+
+    Reservations that are already terminal still pass through the conflict
+    cleanup branch when an open conflict remains — otherwise an unresolved
+    ``conflicts`` row could outlive the reservation forever.
+
+    Steps:
+
+    1. Verify ``admin`` carries the ``admin`` role.
+    2. If the reservation is terminal *and* no open conflict remains:
+       short-circuit (true idempotent no-op).
+    3. Resolve any open conflict tied to this reservation as
+       ``admin_resolved`` and emit a ``CONFLICT_RESOLVED`` audit row.
+    4. If the reservation is still active: mark ``CANCELLED``, release the
+       bay mirror per the rules above, refund the remaining deposit, and
+       publish ``release(reason="admin_override")``.
+    5. Push the appropriate notifications.
+    """
+    if admin.role != UserRole.ADMIN:
+        raise ForbiddenError(
+            "only admins may force-terminate a reservation",
+            code="admin_only",
+        )
+
+    reservation = db.session.execute(
+        select(Reservation)
+        .where(Reservation.id == reservation_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if reservation is None:
+        raise NotFoundError("reservation not found", code="reservation_not_found")
+
+    open_conflict = db.session.execute(
+        select(Conflict).where(
+            Conflict.reservation_id == reservation.id,
+            Conflict.resolved_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+    is_terminal = reservation.status in _TERMINAL_RESERVATION_STATUSES
+    if is_terminal and open_conflict is None:
+        return reservation  # idempotent — nothing left to do
+
+    now = now or utcnow()
+    bay = reservation.bay
+
+    # Conflict cleanup runs in either branch — orphaned conflicts on a
+    # terminal reservation still need to be closed so the partial unique
+    # index on `conflicts_one_open_per_bay` doesn't trap future bookings.
+    if open_conflict is not None:
+        open_conflict.resolved_at = now
+        open_conflict.resolution = ConflictResolution.ADMIN_RESOLVED
+        event_service.record(
+            bay_id=bay.id,
+            kind=BayEventKind.CONFLICT_RESOLVED,
+            reservation_id=reservation.id,
+            payload={
+                "conflict_id": str(open_conflict.id),
+                "resolution": ConflictResolution.ADMIN_RESOLVED.value,
+                "admin_id": str(admin.id),
+            },
+        )
+
+    refund_payment = None
+    publish_release = False
+    if not is_terminal:
+        reservation.status = ReservationStatus.CANCELLED
+        reservation.cancelled_at = now
+
+        if bay.current_reservation_id == reservation.id:
+            bay.current_reservation_id = None
+
+        flip_to_available = bay.state in _HOLDER_OWNED_BAY_STATES or (
+            bay.state == BayState.CONFLICT
+            and open_conflict is not None
+            and open_conflict.kind == ConflictKind.WEAK
+        )
+        if flip_to_available:
+            old_bay_state = bay.state
+            bay.state = BayState.AVAILABLE
+            event_service.record(
+                bay_id=bay.id,
+                kind=BayEventKind.STATE_CHANGED,
+                from_state=old_bay_state,
+                to_state=BayState.AVAILABLE,
+                reservation_id=reservation.id,
+                payload={"reason": "admin_terminate"},
+            )
+
+        event_service.record(
+            bay_id=bay.id,
+            kind=BayEventKind.RESERVATION_CANCELLED,
+            reservation_id=reservation.id,
+            payload={"reason": "admin_terminate", "admin_id": str(admin.id)},
+        )
+
+        refund_payment = payment_service.refund(reservation_id=reservation.id)
+        publish_release = True
+
+    db.session.commit()
+
+    if publish_release:
+        publish_reservation_command(
+            bay_code=bay.code,
+            action="release",
+            reservation=reservation,
+            user=reservation.user,
+            bound_plates=[],
+            reason="admin_override",
+        )
+    if open_conflict is not None:
+        push_conflict_resolved(conflict=open_conflict, bay=bay)
+    if not is_terminal:
+        push_reservation_updated(reservation, bay)
+    push_bay_updated(bay)
+    if refund_payment is not None:
+        push_refund_issued(
+            user=reservation.user,
+            reservation=reservation,
+            amount_cents=refund_payment.amount_cents,
+        )
     return reservation
 
 

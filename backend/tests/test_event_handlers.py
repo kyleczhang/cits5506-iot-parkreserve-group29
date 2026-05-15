@@ -44,6 +44,7 @@ def _make_active_reservation(session, *, bay_code: str, user) -> Reservation:
         expected_arrival_time=utcnow() + timedelta(minutes=10),
     )
     session.add(reservation)
+    session.flush()  # populate reservation.id before linking it on the bay
     bay.state = BayState.RESERVED
     bay.current_reservation_id = reservation.id
     session.commit()
@@ -169,18 +170,118 @@ def test_auto_check_in_replay_is_idempotent(app, session, bays, user_with_plates
 
 
 # ---------------------------------------------------------------------------
-# conflict_strong (not a user penalty — refund issued)
+# conflict_strong — facility-side occupancy incident, NOT a refund trigger.
+# The reservation is preserved; only an admin termination refunds.
 # ---------------------------------------------------------------------------
 
 
-def test_conflict_strong_issues_refund_and_logs_incident(
+def test_conflict_strong_logs_incident_without_refund_or_status_change(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+    monkeypatch,
+):
+    from app.services import notification_service
+
+    refunds_pushed: list[int] = []
+    monkeypatch.setattr(
+        notification_service,
+        "push_refund_issued",
+        lambda *, amount_cents, **_: refunds_pushed.append(amount_cents),
+    )
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    _add_preauth(session, reservation, mock_cards[0])
+
+    with app.app_context():
+        dispatch_event(
+            bay_code="A1",
+            payload=_event(
+                "conflict_strong",
+                recognised_plate="ZZZ999",
+                lpr_confidence=0.91,
+            ),
+        )
+
+        bay = db.session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+        assert bay.state == BayState.CONFLICT
+        assert bay.current_reservation_id == reservation.id
+
+        res = db.session.get(Reservation, reservation.id)
+        # Reservation stays ACTIVE — strong conflict no longer terminates.
+        assert res.status == ReservationStatus.ACTIVE
+
+        conflicts = db.session.execute(db.select(Conflict)).scalars().all()
+        assert len(conflicts) == 1
+        c = conflicts[0]
+        assert c.kind == ConflictKind.STRONG
+        assert c.recognised_plate == "ZZZ999"
+        assert c.resolved_at is None
+
+        # No refund row, no penalty — only the pre_auth from booking.
+        rows = db.session.execute(db.select(Payment)).scalars().all()
+        actions = sorted(r.action.value for r in rows)
+        assert actions == ["pre_auth"]
+
+    assert refunds_pushed == []
+
+
+def test_conflict_strong_from_pending_check_in_rolls_back_to_active(
     app,
     session,
     bays,
     user_with_plates,
     mock_cards,
 ):
+    """If the bay was PENDING_CHECK_IN when strong conflict fires (e.g. a car
+    drove in, LPR proved it isn't the holder's), the reservation rolls back
+    to ACTIVE and the check-in grace clears — the holder hasn't actually
+    arrived yet."""
     reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    reservation.status = ReservationStatus.PENDING_CHECK_IN
+    reservation.check_in_grace_expires_at = utcnow() + timedelta(minutes=5)
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.PENDING_CHECK_IN
+    session.commit()
+    _add_preauth(session, reservation, mock_cards[0])
+
+    with app.app_context():
+        dispatch_event(
+            bay_code="A1",
+            payload=_event(
+                "conflict_strong",
+                recognised_plate="ZZZ999",
+                lpr_confidence=0.91,
+            ),
+        )
+
+        res = db.session.get(Reservation, reservation.id)
+        assert res.status == ReservationStatus.ACTIVE
+        assert res.check_in_grace_expires_at is None
+
+
+def test_conflict_strong_on_checked_in_reservation_leaves_status_unchanged(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+):
+    """A strong conflict layered on a CHECKED_IN reservation must not touch
+    payment state and must not flip reservation status — the wrong vehicle
+    might leave momentarily; the active session stays valid."""
+    from app.models import CheckInMechanism
+
+    reservation = _make_active_reservation(session, bay_code="A1", user=user_with_plates)
+    reservation.status = ReservationStatus.CHECKED_IN
+    reservation.checked_in_at = utcnow() - timedelta(minutes=2)
+    reservation.check_in_mechanism = CheckInMechanism.AUTO_LPR
+    reservation.check_in_recognised_plate = "ABC123"
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.RESERVED_CHECKED_IN
+    session.commit()
     _add_preauth(session, reservation, mock_cards[0])
 
     with app.app_context():
@@ -197,21 +298,11 @@ def test_conflict_strong_issues_refund_and_logs_incident(
         assert bay.state == BayState.CONFLICT
 
         res = db.session.get(Reservation, reservation.id)
-        assert res.status == ReservationStatus.IN_CONFLICT
+        assert res.status == ReservationStatus.CHECKED_IN
 
-        conflicts = db.session.execute(db.select(Conflict)).scalars().all()
-        assert len(conflicts) == 1
-        c = conflicts[0]
-        assert c.kind == ConflictKind.STRONG
-        assert c.recognised_plate == "ZZZ999"
-
-        # Refund row issued, no penalty because the user is the victim.
         rows = db.session.execute(db.select(Payment)).scalars().all()
         actions = sorted(r.action.value for r in rows)
-        assert actions == ["pre_auth", "refund"]
-        assert all(r.penalty_kind is None for r in rows)
-        refund = next(r for r in rows if r.action == PaymentAction.REFUND)
-        assert refund.amount_cents == 1000
+        assert actions == ["pre_auth"]
 
 
 def test_conflict_strong_replay_is_idempotent(
@@ -230,13 +321,13 @@ def test_conflict_strong_replay_is_idempotent(
 
         conflicts = db.session.execute(db.select(Conflict)).scalars().all()
         assert len(conflicts) == 1
-        # Refund only once
+        # The strong handler never refunds anymore, replays still don't.
         refunds = (
             db.session.execute(db.select(Payment).where(Payment.action == PaymentAction.REFUND))
             .scalars()
             .all()
         )
-        assert len(refunds) == 1
+        assert refunds == []
 
 
 # ---------------------------------------------------------------------------

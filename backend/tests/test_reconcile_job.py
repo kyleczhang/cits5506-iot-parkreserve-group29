@@ -41,7 +41,7 @@ def _seed_with_preauth(session, *, bay, user, mock_card, status, **res_kwargs):
     return res
 
 
-def test_sweeper_synthesises_no_show_when_pi_event_missed(
+def test_sweeper_synthesises_no_show_when_arrival_grace_expires(
     app,
     session,
     bays,
@@ -49,7 +49,7 @@ def test_sweeper_synthesises_no_show_when_pi_event_missed(
     mock_cards,
 ):
     bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
-    bay.state = BayState.AVAILABLE
+    bay.state = BayState.RESERVED
     res = _seed_with_preauth(
         session,
         bay=bay,
@@ -122,7 +122,7 @@ def test_sweeper_idempotent_does_not_double_charge(
     mock_cards,
 ):
     bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
-    bay.state = BayState.AVAILABLE
+    bay.state = BayState.RESERVED
     _seed_with_preauth(
         session,
         bay=bay,
@@ -145,3 +145,31 @@ def test_sweeper_idempotent_does_not_double_charge(
             .all()
         )
         assert len(penalties) == 1
+
+
+def test_sweeper_skips_no_show_when_bay_is_in_strong_conflict(
+    app,
+    session,
+    bays,
+    user_with_plates,
+    mock_cards,
+):
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    bay.state = BayState.CONFLICT
+    res = _seed_with_preauth(
+        session,
+        bay=bay,
+        user=user_with_plates,
+        mock_card=mock_cards[0],
+        status=ReservationStatus.ACTIVE,
+        booked_at=utcnow() - timedelta(minutes=20),
+        expected_arrival_time=utcnow() - timedelta(minutes=10),
+    )
+
+    with app.app_context():
+        result = run_once()
+
+    assert result["no_show"] == 0
+    with app.app_context():
+        refreshed = db.session.get(Reservation, res.id)
+        assert refreshed.status == ReservationStatus.ACTIVE

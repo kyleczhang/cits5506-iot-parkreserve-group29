@@ -27,6 +27,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
+import { getBay } from "@/api/bays";
 import {
   cancelReservation,
   checkInReservation,
@@ -57,6 +58,16 @@ export function ReservationCockpit() {
     queryKey: qk.reservations.detail(id),
     queryFn: () => getReservation(id),
     enabled: Boolean(id),
+  });
+  // Strong conflict keeps the reservation row in `active` / `checked_in`
+  // (CLAUDE.md "Conflict semantics"). We mirror the bay's live state so
+  // the cockpit can surface the incident even though the reservation
+  // lifecycle hasn't moved — `bay.updated` invalidates this key.
+  const bayCode = reservation.data?.bay_code;
+  const bay = useQuery({
+    queryKey: qk.bays.detail(bayCode ?? ""),
+    queryFn: () => getBay(bayCode as string),
+    enabled: Boolean(bayCode),
   });
 
   // ---- mutations ----------------------------------------------------------
@@ -212,7 +223,22 @@ export function ReservationCockpit() {
       </header>
 
       {/* In-conflict banner */}
-      {r.status === "in_conflict" ? (
+      {(() => {
+        // `in_conflict` = weak conflict (driver breach, grace expired).
+        // `bay.state === "conflict"` while the reservation is still
+        // `active` / `pending_check_in` / `checked_in` = strong conflict
+        // (wrong vehicle at the bay). Both surface here; copy differs.
+        const isNonTerminal =
+          r.status === "active" ||
+          r.status === "pending_check_in" ||
+          r.status === "checked_in" ||
+          r.status === "in_conflict";
+        const bayInConflict =
+          isNonTerminal &&
+          bay.data?.state === "conflict" &&
+          r.status !== "in_conflict";
+        if (r.status !== "in_conflict" && !bayInConflict) return null;
+        return (
         <Card
           className={
             "border-danger/40 bg-danger/10 p-4 " +
@@ -227,9 +253,18 @@ export function ReservationCockpit() {
             />
             <div>
               <p className="font-semibold text-text">
-                Conflict detected at your bay — facility staff have been notified.
+                {bayInConflict
+                  ? "Another vehicle is currently at your bay — staff have been notified."
+                  : "Conflict detected at your bay — facility staff have been notified."}
               </p>
-              {conflictIsStrong ? (
+              {bayInConflict ? (
+                <p className="mt-1 text-sm text-text-muted">
+                  Your reservation is being held while the facility resolves
+                  the incident. If the other vehicle leaves before your arrival
+                  you&apos;ll be able to check in as normal; otherwise staff
+                  may terminate the reservation and refund your deposit.
+                </p>
+              ) : conflictIsStrong ? (
                 <p className="mt-1 text-sm text-text-muted">
                   This conflict requires staff intervention. Your deposit has
                   been refunded — see the payments tab for the receipt.
@@ -244,7 +279,8 @@ export function ReservationCockpit() {
             </div>
           </header>
         </Card>
-      ) : null}
+        );
+      })()}
 
       {/* Action region */}
       <ActionRegion

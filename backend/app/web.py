@@ -2,6 +2,14 @@
 
 Runs HTTP + Socket.IO and also starts inbound MQTT plus APScheduler jobs
 inside the same process.
+
+Note: ``eventlet.monkey_patch()`` MUST run **before** anything imports
+the ``app`` package — otherwise werkzeug/flask LocalProxy objects already
+created during ``app/__init__.py`` blow up eventlet's
+"upgrade existing instances" pass, and at least one RLock ends up
+un-greened. Use [run_dev.py](../run_dev.py) (top-level entrypoint) to
+launch the dev server; importing this module directly via
+``python -m app.web`` is no longer supported.
 """
 
 from __future__ import annotations

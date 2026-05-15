@@ -220,14 +220,17 @@ def refund(
 ) -> Payment | None:
     """Restore the *remaining* deposit as a victim refund.
 
-    Idempotent on ``refund:<reservation_id>:strong_conflict``. Semantically
-    equivalent to :func:`release` but flagged separately for the receipt.
+    Idempotent on ``refund:<reservation_id>``. Semantically equivalent to
+    :func:`release` but flagged separately so the receipt distinguishes
+    "victim refund" from "deposit returned because the booking ran its
+    course." Owned by :func:`reservation_service.admin_terminate` — the
+    raw ``conflict_strong`` event no longer triggers this on its own.
     """
     pre_auth = _pre_auth(reservation_id)
     if pre_auth is None:
         return None
 
-    idempotency_key = f"refund:{reservation_id}:strong_conflict"
+    idempotency_key = f"refund:{reservation_id}"
     existing = _existing(idempotency_key)
     if existing is not None:
         return existing

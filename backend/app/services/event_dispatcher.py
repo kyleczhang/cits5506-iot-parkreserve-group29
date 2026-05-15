@@ -233,10 +233,18 @@ def _on_check_in_confirmed(bay: ParkingBay, payload: EventPayload) -> None:
 def _on_conflict_strong(bay: ParkingBay, payload: EventPayload) -> None:
     """Strong-evidence conflict: LPR plate ∉ user's bound plates.
 
-    This is not a user penalty — the holder is treated as a victim:
-    a full ``refund`` is issued against the deposit. Logged as a facility
-    incident with plate evidence. The Pi separately uploads the JPEG to
-    /api/v1/internal/conflicts/evidence keyed by `source_event_id`.
+    Treated as a **facility-side occupancy incident**, not a reservation
+    terminator: the holder's reservation is preserved while the wrong vehicle
+    sits in the bay (status stays ``ACTIVE`` or ``CHECKED_IN``; a
+    ``PENDING_CHECK_IN`` reservation rolls back to ``ACTIVE`` since the Pi has
+    proven the present vehicle isn't theirs). No refund is issued here — that
+    is owned by :func:`reservation_service.admin_terminate` and only fires
+    when an admin explicitly terminates. If the wrong vehicle drives away,
+    :mod:`app.services.bay_service` resolves the conflict as ``vehicle_left``
+    and restores the reservation cache.
+
+    The Pi separately uploads the JPEG to
+    /api/v1/internal/conflicts/evidence keyed by ``source_event_id``.
     """
     if not payload.recognised_plate:
         logger.warning("event.conflict_strong_missing_plate bay=%s", bay.code)
@@ -260,11 +268,17 @@ def _on_conflict_strong(bay: ParkingBay, payload: EventPayload) -> None:
         detected_at=payload.ts,
     )
 
-    if reservation is not None and reservation.status in {
-        ReservationStatus.ACTIVE,
-        ReservationStatus.PENDING_CHECK_IN,
-    }:
-        reservation.status = ReservationStatus.IN_CONFLICT
+    # Reservation status under strong conflict:
+    #   PENDING_CHECK_IN → ACTIVE (Pi proved the present car isn't the holder's;
+    #                              the holder is once again "yet to arrive").
+    #   ACTIVE           → unchanged.
+    #   CHECKED_IN       → unchanged (the holder already checked in; this is a
+    #                                 facility incident overlaid on a live
+    #                                 session).
+    # IN_CONFLICT is reserved for weak conflicts only.
+    if reservation is not None and reservation.status == ReservationStatus.PENDING_CHECK_IN:
+        reservation.status = ReservationStatus.ACTIVE
+        reservation.check_in_grace_expires_at = None
 
     if bay.state != BayState.CONFLICT:
         old_state = bay.state
@@ -288,25 +302,12 @@ def _on_conflict_strong(bay: ParkingBay, payload: EventPayload) -> None:
             "conflict_id": str(conflict.id),
         },
     )
-
-    refund_payment = None
-    if reservation is not None:
-        refund_payment = payment_service.refund(
-            reservation_id=reservation.id,
-            source_event_id=payload.event_id,
-        )
     db.session.commit()
 
     notification_service.push_conflict_alert(conflict=conflict, bay=bay)
     notification_service.push_bay_updated(bay)
     if reservation is not None:
         notification_service.push_reservation_updated(reservation, bay)
-        if refund_payment is not None:
-            notification_service.push_refund_issued(
-                user=reservation.user,
-                reservation=reservation,
-                amount_cents=refund_payment.amount_cents,
-            )
 
 
 def _on_conflict_weak(bay: ParkingBay, payload: EventPayload) -> None:

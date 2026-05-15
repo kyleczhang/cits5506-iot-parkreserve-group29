@@ -13,6 +13,7 @@ class BayOut(BaseModel):
     code: str
     label: str
     state: str
+    mirror_state: str
     last_distance_cm: Decimal | None
     sensor_last_seen_at: datetime | None
     current_reservation_id: str | None
