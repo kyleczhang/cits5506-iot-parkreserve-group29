@@ -1,145 +1,145 @@
 ================================================================
-ParkReserve 树莓派网关 — 完整测试接口文档
-更新日期：2026-05-13
+ParkReserve Raspberry Pi Gateway — Complete Test Interface Documentation
+Updated: 2026-05-13
 ================================================================
 
 ================================================================
-【项目结构】
+[Project Structure]
 ================================================================
 raspberry/
 ├── main.py
 ├── config/
 │   └── settings.py
 ├── services/
-│   ├── control_service.py   （主控：MQTT + LPR 调度）
-│   ├── image_receiver.py    （HTTP 接收 ESP32 图片）
-│   └── state_machine.py     （每个车位的状态机）
+│   ├── control_service.py   (main controller: MQTT + LPR scheduling)
+│   ├── image_receiver.py    (HTTP receiver for ESP32 images)
+│   └── state_machine.py     (state machine for each parking bay)
 └── tests/
-    └── test.txt             （本文件）
+    └── test.txt             (this file)
 
 ================================================================
-【启动命令】
+[Startup Command]
 ================================================================
 python main.py
 
 ================================================================
-【当前配置（settings.py）】
+[Current Configuration (settings.py)]
 ================================================================
 HiveMQ Host:     b57eba64e4174cb38be14e7225b632fa.s1.eu.hivemq.cloud
 HiveMQ Username: yuancong
 HiveMQ Password: Yuancong29!
-HTTP 端口:        5000
-本地 MQTT 端口:   1883
-NO_SHOW_GRACE:   300 秒（生产值，测试时可改为 30）
-CHECK_IN_GRACE:  300 秒（生产值，测试时可改为 30）
+HTTP Port:        5000
+Local MQTT Port:  1883
+NO_SHOW_GRACE:   300s (production value; change to 30 for testing)
+CHECK_IN_GRACE:  300s (production value; change to 30 for testing)
 BAY_CODES:       A1, A2, A3
 
 ================================================================
-【LED 指令字符串对照表（Pi → ESP32）】
+[LED Command String Reference (Pi → ESP32)]
 ================================================================
-状态                    LED 指令字符串          ESP32 行为
-available             → "available"          → 绿灯常亮
-reserved              → "reserved"           → 黄灯常亮
-pending_check_in      → "pending_check_in"   → 黄灯闪烁
-reserved_checked_in   → "reserved_checked_in"→ 红灯常亮
-occupied（无预约）     → "reserved_checked_in"→ 红灯常亮
-conflict              → "conflict_strong"    → 红灯闪烁 + 蜂鸣器
+State                   LED Command String        ESP32 Behavior
+available             → "available"           → green light steady
+reserved              → "reserved"            → yellow light steady
+pending_check_in      → "pending_check_in"    → yellow light blinking
+reserved_checked_in   → "reserved_checked_in" → red light steady
+occupied (no booking) → "reserved_checked_in" → red light steady
+conflict              → "conflict_strong"     → red light blinking + buzzer
 
 ================================================================
-【传感器消息格式（ESP32 → Pi，两种都支持）】
+[Sensor Message Format (ESP32 → Pi, both supported)]
 ================================================================
-# 纯字符串格式（ESP32 实际发送）
+# Plain string format (what ESP32 actually sends)
 mosquitto_pub -h localhost -t "bay/1/status" -m "occupied"
 mosquitto_pub -h localhost -t "bay/1/status" -m "available"
 
-# JSON 格式（本地测试兼容）
+# JSON format (compatible for local testing)
 mosquitto_pub -h localhost -t "bay/A1/status" -m '{"occupied":true,"distance_cm":12.0}'
 mosquitto_pub -h localhost -t "bay/A1/status" -m '{"occupied":false,"distance_cm":280.0}'
 
 ================================================================
-【一、接收 Backend 的接口（Backend → Pi）】
+[1. Interfaces for Receiving Backend Messages (Backend → Pi)]
 ================================================================
 
-接口1：预约创建
-话题：cloud/bay/A1/reservation
-测试命令：
+Interface 1: Reservation Created
+Topic: cloud/bay/A1/reservation
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"create","reservation_id":"550e8400-e29b-41d4-a716-446655440000","user_id":"660e8400-e29b-41d4-a716-446655440001","bound_plates":["CZH5506"],"expected_arrival_time":"2026-12-31T10:00:00+00:00","ts":"2026-05-13T10:00:00+00:00"}'
-Pi 预期日志：
+Expected Pi log:
   [A1] available → reserved
   [LocalMQTT] → bay/A1/led  'reserved'
 
 ---
 
-接口2：车牌列表更新
-话题：cloud/bay/A1/reservation
-测试命令：
+Interface 2: Plate List Update
+Topic: cloud/bay/A1/reservation
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"update_plates","reservation_id":"550e8400-e29b-41d4-a716-446655440000","bound_plates":["CZH5506","9NEW999"],"ts":"2026-05-13T10:01:00+00:00"}'
-Pi 预期日志：
-  [A1] 绑定车牌更新：['CZH5506', '9NEW999']
+Expected Pi log:
+  [A1] Bound plates updated: ['CZH5506', '9NEW999']
 
 ---
 
-接口3：手动 check-in（前提：当前状态为 pending_check_in）
-话题：cloud/bay/A1/reservation
-测试命令：
+Interface 3: Manual check-in (requires current state to be pending_check_in)
+Topic: cloud/bay/A1/reservation
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"check_in","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:05:00+00:00"}'
-Pi 预期日志：
+Expected Pi log:
   [A1] pending_check_in → reserved_checked_in  event=check_in_confirmed
   [LocalMQTT] → bay/A1/led  'reserved_checked_in'
 
 ---
 
-接口4：预约取消
-话题：cloud/bay/A1/reservation
-测试命令：
+Interface 4: Reservation Cancelled
+Topic: cloud/bay/A1/reservation
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"cancel","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:02:00+00:00"}'
-Pi 预期日志：
+Expected Pi log:
   [A1] reserved → available
   [LocalMQTT] → bay/A1/led  'available'
 
 ---
 
-接口5：release（Backend 主动释放车位）
-话题：cloud/bay/A1/reservation
-reason 可选值：no_show / completed / abandoned / admin_override
-测试命令：
+Interface 5: release (Backend actively releases the bay)
+Topic: cloud/bay/A1/reservation
+reason options: no_show / completed / abandoned / admin_override
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"release","reason":"completed","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:10:00+00:00"}'
-Pi 预期日志：
-  [A1] 收到 release，原因：completed
-  [A1] → available（无车）或 occupied（有车）
+Expected Pi log:
+  [A1] Received release, reason: completed
+  [A1] → available (no vehicle) or occupied (vehicle present)
 
 ---
 
-接口6：expire_check_in（Backend 通知 check-in 窗口过期）
-话题：cloud/bay/A1/reservation
-测试命令：
+Interface 6: expire_check_in (Backend notifies check-in window has expired)
+Topic: cloud/bay/A1/reservation
+Test command:
 mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
   -m '{"action":"expire_check_in","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:10:00+00:00"}'
-Pi 预期日志：
-  [A1] 收到 expire_check_in
-  [A1] → available 或 occupied
+Expected Pi log:
+  [A1] Received expire_check_in
+  [A1] → available or occupied
 
 ---
 
-接口7：Resync（Backend 重启后要求 Pi 重新上报状态）
-话题：cloud/system/resync
-测试命令：
+Interface 7: Resync (Backend requests Pi to re-report all states after restart)
+Topic: cloud/system/resync
+Test command:
 mosquitto_pub -h localhost -t "cloud/system/resync" -m '{"request":"replay"}'
-Pi 预期日志：
-  [CloudMQTT] 收到 resync 请求，重新上报所有状态
-  [A1] resync → 重新上报状态 available
-  [A2] resync → 重新上报状态 available
-  [A3] resync → 重新上报状态 available
+Expected Pi log:
+  [CloudMQTT] Received resync request, re-reporting all states
+  [A1] resync → re-reporting state available
+  [A2] resync → re-reporting state available
+  [A3] resync → re-reporting state available
 
 ================================================================
-【二、Pi 发给 Backend 的数据（Backend 验收）】
+[2. Data Pi Sends to Backend (Backend validation)]
 ================================================================
-Backend 订阅命令：
+Backend subscribe command:
 mosquitto_sub \
   -h b57eba64e4174cb38be14e7225b632fa.s1.eu.hivemq.cloud \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
@@ -150,9 +150,9 @@ mosquitto_sub \
 
 ---
 
-场景A：车辆到达有预约车位 → LPR 匹配成功 → auto_check_in ✅
-步骤：
-  1. 发预约（见接口1）
+Scenario A: Vehicle arrives at reserved bay → LPR match → auto_check_in ✅
+Steps:
+  1. Send reservation (see Interface 1)
   2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
   3. curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
        -H "Content-Type: image/jpeg" \
@@ -160,14 +160,14 @@ mosquitto_sub \
        -H "X-Timestamp: 20260513_100000" \
        --data-binary "@/Users/congyuan/Desktop/plate.jpg"
 
-Backend 预期依次收到：
+Expected Backend messages in order:
   // cloud/bay/A1/state
   {"state":"pending_check_in","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
   // cloud/bay/A1/event
   {"event":"pending_check_in","ts":"...","event_id":"...","reservation_id":"550e8400-..."}
 
-  // cloud/bay/A1/state（LPR 识别后）
+  // cloud/bay/A1/state (after LPR recognition)
   {"state":"reserved_checked_in","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
   // cloud/bay/A1/event
@@ -175,16 +175,16 @@ Backend 预期依次收到：
 
 ---
 
-场景B：LPR 不匹配 → conflict_strong ✅
-准备：在 control_service.py 里改 mock_plate
-  self.mock_plate = "9ZZZ999"   # 不在绑定列表里
+Scenario B: LPR mismatch → conflict_strong ✅
+Preparation: change mock_plate in control_service.py
+  self.mock_plate = "9ZZZ999"   # not in bound plates list
 
-步骤：
-  1. 发预约
+Steps:
+  1. Send reservation
   2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
-  3. curl 上传图片
+  3. curl upload image
 
-Backend 预期收到：
+Expected Backend messages:
   // cloud/bay/A1/state
   {"state":"conflict","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
@@ -193,199 +193,180 @@ Backend 预期收到：
 
 ---
 
-场景C：conflict_strong 后错误车辆离开 → Backend 恢复预约
-步骤：
-  1. 完成场景B（进入 conflict 状态）
+Scenario C: Wrong vehicle leaves after conflict_strong → Backend restores reservation
+Steps:
+  1. Complete Scenario B (enter conflict state)
   2. mosquitto_pub -h localhost -t "bay/A1/status" -m "available"
 
-Pi 预期日志：
-  [A1] conflict 后车辆离开，上报 available，等待 Backend 决策
+Expected Pi log:
+  [A1] Vehicle left after conflict, reporting available, awaiting Backend decision
   [A1] conflict → available
   [LocalMQTT] → bay/A1/led  'available'
 
-Backend 预期收到：
+Expected Backend message:
   // cloud/bay/A1/state
   {"state":"available","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
-Backend 处理后重发 create，Pi 收到后：
-  [A1] conflict 中恢复预约缓存，等待车辆离开后回到 reserved
-  （此时 available 状态，收到 create 后变为 reserved）
+After Backend processes and re-sends create, Pi receives it:
+  [A1] Restoring reservation cache during conflict, waiting for vehicle to leave to return to reserved
+  (currently available state; after receiving create it transitions to reserved)
 
 ---
 
-场景D：LPR 置信度不足 → 人工 check-in 超时 → conflict（weak）
-准备：在 control_service.py 里改 mock_confidence
-  self.mock_confidence = 0.50   # 低于 0.80 阈值
-  并把 settings.py 里 MANUAL_CHECKIN_GRACE_SECONDS 改为 30（测试用）
+Scenario D: LPR confidence too low → manual check-in timeout → conflict (weak)
+Preparation: change mock_confidence in control_service.py
+  self.mock_confidence = 0.50   # below 0.80 threshold
+  and change MANUAL_CHECKIN_GRACE_SECONDS in settings.py to 30 (for testing)
 
-步骤：
-  1. 发预约
+Steps:
+  1. Send reservation
   2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
-  3. curl 上传图片（LPR 置信度不足，停在 pending_check_in）
-  4. 等待 30 秒超时
+  3. curl upload image (LPR confidence too low, stays at pending_check_in)
+  4. Wait 30 seconds for timeout
 
-Pi 预期日志（超时后）：
-  [A1] 人工 check-in 超时 → conflict（Backend 自行处理 conflict_weak）
+Expected Pi log (after timeout):
+  [A1] Manual check-in timeout → conflict (Backend handles conflict_weak internally)
   [LocalMQTT] → bay/A1/led  'conflict_strong'
 
-Backend 预期收到（只有 state，无 event）：
+Expected Backend message (state only, no event):
   // cloud/bay/A1/state
   {"state":"conflict","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
 ---
 
-场景E：预约了但车没来 → no_show
-准备：把 settings.py 里 NO_SHOW_GRACE_SECONDS 改为 30（测试用），
-      expected_arrival_time 改为过去的时间
+Scenario E: Reservation made but vehicle never arrives → no_show
+Preparation: change NO_SHOW_GRACE_SECONDS in settings.py to 30 (for testing),
+             set expected_arrival_time to a past time
 
-步骤：
-  1. 发预约（arrival_time 设为当前时间）
-  2. 不发车辆到达消息，等待 30 秒超时
+Steps:
+  1. Send reservation (set arrival_time to current time)
+  2. Do not send vehicle arrival message, wait 30 seconds for timeout
 
-Pi 预期日志：
-  [A1] No-show → 释放车位（Backend 自行处理 no_show 事件）
+Expected Pi log:
+  [A1] No-show → releasing bay (Backend handles no_show event internally)
   [LocalMQTT] → bay/A1/led  'available'
 
-Backend 预期收到（只有 state，无 event）：
+Expected Backend message (state only, no event):
   // cloud/bay/A1/state
   {"state":"available","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
 ---
 
-场景F：无预约车辆到达 → occupied
-步骤：
+Scenario F: Vehicle arrives with no reservation → occupied
+Steps:
   mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
 
-Backend 预期收到：
+Expected Backend message:
   // cloud/bay/A1/state
   {"state":"occupied","last_distance_cm":0.0,"ts":"...","event_id":"..."}
 
-Pi 发给 ESP32：
-  bay/A1/led → "reserved_checked_in"（红灯常亮）
+Pi sends to ESP32:
+  bay/A1/led → "reserved_checked_in" (red light steady)
 
 ---
 
-场景G：心跳（每10秒自动）
-Backend 预期每10秒收到：
+Scenario G: Heartbeat (automatic every 10 seconds)
+Expected Backend message every 10 seconds:
   // cloud/system/heartbeat
   {"pi_id":"pi-01","ts":"2026-05-13T10:00:00+00:00"}
 
 ================================================================
-【三、接收 ESP32 的接口】
+[3. Interfaces for Receiving ESP32 Messages]
 ================================================================
 
-接口1：传感器状态（每2秒发送）
-话题：bay/<bay_id>/status
-ESP32 发送格式（纯字符串）：
-  "occupied"   → 有车
-  "available"  → 无车
+Interface 1: Sensor status (sent every 2 seconds)
+Topic: bay/<bay_id>/status
+ESP32 send format (plain string):
+  "occupied"   → vehicle present
+  "available"  → no vehicle
 
-Pi 预期行为：
-  有预约时："occupied" → pending_check_in
-  无预约时："occupied" → occupied
-  "available" → 根据上下文 → reserved 或 available
+Expected Pi behavior:
+  with reservation:    "occupied" → pending_check_in
+  without reservation: "occupied" → occupied
+  "available" → depending on context → reserved or available
 
 ---
 
-接口2：车牌图片上传（车辆到达时触发一次）
-端点：POST http://<pi_ip>:5000/api/v1/bays/<bay_id>/image
+Interface 2: License plate image upload (triggered once when vehicle arrives)
+Endpoint: POST http://<pi_ip>:5000/api/v1/bays/<bay_id>/image
 Headers:
   Content-Type: image/jpeg
   X-API-Key: ParkReserve-Group29-SuperSecret
-  X-Timestamp: 20260513_100000  （可选）
-Body: 纯二进制 JPEG
+  X-Timestamp: 20260513_100000  (optional)
+Body: raw binary JPEG
 
-测试命令：
+Test command:
 curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
   -H "Content-Type: image/jpeg" \
   -H "X-API-Key: ParkReserve-Group29-SuperSecret" \
   -H "X-Timestamp: 20260513_100000" \
   --data-binary "@/Users/congyuan/Desktop/plate.jpg"
 
-Pi 预期响应（202）：
+Expected Pi response (202):
   {"message": "Image securely received", "file": "bay_A1_20260513_100000.jpg"}
 
-Pi 预期日志：
-  [ImageReceiver] 保存：./tmp/parkReserve/images/bay_A1_20260513_100000.jpg
-  [LPR] EasyOCR 原始结果：[...]
-  [LPR] 最佳结果：CZH5506，置信度：0.92
+Expected Pi log:
+  [ImageReceiver] Saved: ./tmp/parkReserve/images/bay_A1_20260513_100000.jpg
+  [LPR] EasyOCR raw results: [...]
+  [LPR] Best result: CZH5506, confidence: 0.92
   [A1] pending_check_in → reserved_checked_in  event=auto_check_in
 
 ================================================================
-【四、Pi 发给 ESP32 的指令】
+[4. Commands Pi Sends to ESP32]
 ================================================================
 
-指令1：绿灯常亮（available）
-话题：bay/A1/led，payload："available"
-手动测试命令：
+Command 1: Green light steady (available)
+Topic: bay/A1/led, payload: "available"
+Manual test command:
 mosquitto_pub -h localhost -t "bay/A1/led" -m "available"
 
-指令2：黄灯常亮（reserved）
-话题：bay/A1/led，payload："reserved"
-手动测试命令：
+Command 2: Yellow light steady (reserved)
+Topic: bay/A1/led, payload: "reserved"
+Manual test command:
 mosquitto_pub -h localhost -t "bay/A1/led" -m "reserved"
 
-指令3：黄灯闪烁（pending_check_in）
-话题：bay/A1/led，payload："pending_check_in"
-手动测试命令：
+Command 3: Yellow light blinking (pending_check_in)
+Topic: bay/A1/led, payload: "pending_check_in"
+Manual test command:
 mosquitto_pub -h localhost -t "bay/A1/led" -m "pending_check_in"
 
-指令4：红灯常亮（reserved_checked_in / occupied）
-话题：bay/A1/led，payload："reserved_checked_in"
-手动测试命令：
+Command 4: Red light steady (reserved_checked_in / occupied)
+Topic: bay/A1/led, payload: "reserved_checked_in"
+Manual test command:
 mosquitto_pub -h localhost -t "bay/A1/led" -m "reserved_checked_in"
 
-指令5：红灯闪烁 + 蜂鸣器（conflict）
-话题：bay/A1/led，payload："conflict_strong"
-手动测试命令：
+Command 5: Red light blinking + buzzer (conflict)
+Topic: bay/A1/led, payload: "conflict_strong"
+Manual test command:
 mosquitto_pub -h localhost -t "bay/A1/led" -m "conflict_strong"
 
 ================================================================
-【五、常用调试命令】
+[5. Common Debug Commands]
 ================================================================
 
-# 查看当前所有车位状态和预约数据
+# View current status and reservation data for all bays
 curl http://localhost:5000/status
 
-# 健康检查
+# Health check
 curl http://localhost:5000/health
 
-# 模拟车辆到达
+# Simulate vehicle arriving
 mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
 
-# 模拟车辆离开
+# Simulate vehicle leaving
 mosquitto_pub -h localhost -t "bay/A1/status" -m "available"
 
-# 上传图片触发 LPR
+# Upload image to trigger LPR
 curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
   -H "Content-Type: image/jpeg" \
   -H "X-API-Key: ParkReserve-Group29-SuperSecret" \
   -H "X-Timestamp: 20260513_100000" \
   --data-binary "@/Users/congyuan/Desktop/speak-retell.jpg"
 
-# 订阅 ESP32 收到的 LED 指令（验证 Pi 是否正确发送）
+# Subscribe to LED commands received by ESP32 (verify Pi sends correctly)
 mosquitto_sub -h localhost -t "bay/+/led"
 
-# 订阅 Backend 收到的所有消息
+# Subscribe to all messages received by Backend
 mosquitto_sub -h localhost -t "cloud/#"
 
 ================================================================
-【六、测试进度】
-================================================================
-✅ 1. pending_check_in → auto_check_in（LPR 匹配成功）
-✅ 2. pending_check_in → conflict_strong（LPR 不匹配）
-   3. pending_check_in → conflict_weak（人工 check-in 超时）
-   4. conflict_strong → 车辆离开 → Backend 恢复预约
-   5. no_show（预约到期无车）
-   6. 完整三方联调（ESP32 + Pi + Backend）
-
-
-
-
-
-   1、能否取消pending中间过程，直接conflict或者auto 
-   2、能否不要有任何grace ,改成半小时，改名称和注释说明，删掉no show代码
-   3、手动改车牌
-   4、端口号5000或者8080， 还有测试模式和真实模式
-
-   5、改代码注释成英文

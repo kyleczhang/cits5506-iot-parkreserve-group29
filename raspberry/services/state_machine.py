@@ -1,44 +1,49 @@
 # =============================================================================
-# services/state_machine.py  —  每个车位的预约状态机
+# services/state_machine.py  —  Per-bay reservation state machine
 # =============================================================================
 """
-状态值（对齐接口文档 BayStateLiteral）：
+State values (aligned with interface doc BayStateLiteral):
   available / reserved / occupied / pending_check_in /
   reserved_checked_in / conflict / offline
 
-事件值（对齐接口文档 EventLiteral）：
+Event values (aligned with interface doc EventLiteral):
   sensor_online / sensor_offline /
   auto_check_in / pending_check_in / check_in_confirmed / conflict_strong
-  （conflict_weak 和 no_show 由 Backend 内部定时任务处理，Pi 只上报 state）
+  (conflict_weak and no_show are handled by Backend scheduled tasks; Pi only reports state)
 
-状态转换图：
+State transition diagram:
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  available ──[create]──► reserved                                        │
 │                              │                                           │
 │                     [sensor: vehicle arrives]                            │
 │                              ▼                                           │
-│                       pending_check_in ◄──[LPR失败/低置信]               │
+│                       pending_check_in ◄──[LPR failed/low confidence]   │
 │                         │         │                                      │
-│            [LPR匹配成功] │         │ [LPR不匹配]                          │
+│            [LPR match]  │         │ [LPR mismatch]                       │
 │                         ▼         ▼                                      │
-│             reserved_checked_in  conflict ◄──[人工check-in超时]           │
+│             reserved_checked_in  conflict ◄──[manual check-in timeout]  │
 │                                                                          │
-│  pending_check_in ──[人工check-in]──► reserved_checked_in               │
-│  conflict ──[Backend重发create]──► 恢复预约缓存（等车辆离开回reserved）    │
-│  conflict ──[Backend重发check_in]──► reserved_checked_in（已签到恢复）    │
-│  reserved_checked_in ──[车辆离开]──► available                           │
-│  conflict ──[车辆离开]──► available（Pi保留预约缓存，等Backend决策）       │
-│  reserved ──[到达时间+grace仍空]──► available（只上报state）              │
-│  available ──[有车但无预约]──► occupied                                  │
-│  occupied ──[车辆离开]──► available                                      │
+│  pending_check_in ──[manual check-in]──► reserved_checked_in            │
+│  conflict ──[Backend re-sends create]──► restore reservation cache       │
+│                                          (wait for vehicle to leave → reserved) │
+│  conflict ──[Backend re-sends check_in]──► reserved_checked_in          │
+│                                            (check-in recovered)          │
+│  reserved_checked_in ──[vehicle leaves]──► available                    │
+│  conflict ──[vehicle leaves]──► available                                │
+│                                 (Pi retains reservation cache,           │
+│                                  awaits Backend decision)                │
+│  reserved ──[arrival time + grace still empty]──► available              │
+│                                                   (state report only)   │
+│  available ──[vehicle present but no reservation]──► occupied            │
+│  occupied ──[vehicle leaves]──► available                               │
 └──────────────────────────────────────────────────────────────────────────┘
 
-LED 指令（纯字符串，对齐 ESP32 接口文档）：
-  available           → ESP32 绿灯常亮
-  reserved            → ESP32 黄灯常亮
-  pending_check_in    → ESP32 黄灯闪烁
-  reserved_checked_in → ESP32 红灯常亮
-  conflict_strong     → ESP32 红灯闪烁 + 蜂鸣器
+LED commands (plain strings, aligned with ESP32 interface doc):
+  available           → ESP32 green light steady
+  reserved            → ESP32 yellow light steady
+  pending_check_in    → ESP32 yellow light blinking
+  reserved_checked_in → ESP32 red light steady
+  conflict_strong     → ESP32 red light blinking + buzzer
 """
 
 import threading
@@ -53,7 +58,7 @@ from typing import Optional, List, Callable
 logger = logging.getLogger(__name__)
 
 
-# ── 状态枚举 ──────────────────────────────────────────────────────────────────
+# ── State Enum ────────────────────────────────────────────────────────────────
 
 class BayState(Enum):
     AVAILABLE           = "available"
@@ -65,20 +70,20 @@ class BayState(Enum):
     OFFLINE             = "offline"
 
 
-# ── LED 指令字符串（纯字符串，ESP32 直接解析）─────────────────────────────────
+# ── LED Command Strings (plain strings, parsed directly by ESP32) ─────────────
 
 LED_COMMANDS = {
     BayState.AVAILABLE:            "available",
     BayState.RESERVED:             "reserved",
     BayState.PENDING_CHECK_IN:     "pending_check_in",
     BayState.RESERVED_CHECKED_IN:  "reserved_checked_in",
-    BayState.OCCUPIED:             "reserved_checked_in",  # 无预约占用 → 红灯常亮
+    BayState.OCCUPIED:             "reserved_checked_in",  # unbooked occupancy → solid red light
     BayState.CONFLICT:             "conflict_strong",
     BayState.OFFLINE:              None,
 }
 
 
-# ── 事件枚举 ──────────────────────────────────────────────────────────────────
+# ── Event Enum ────────────────────────────────────────────────────────────────
 
 class BayEvent(Enum):
     SENSOR_ONLINE      = "sensor_online"
@@ -89,7 +94,7 @@ class BayEvent(Enum):
     CONFLICT_STRONG    = "conflict_strong"
 
 
-# ── 预约数据结构 ──────────────────────────────────────────────────────────────
+# ── Reservation Data Structure ────────────────────────────────────────────────
 
 @dataclass
 class Reservation:
@@ -102,16 +107,16 @@ class Reservation:
         self.bound_plates = [p.upper().replace(" ", "") for p in self.bound_plates]
 
 
-# ── 每个车位的状态机 ──────────────────────────────────────────────────────────
+# ── Per-Bay State Machine ─────────────────────────────────────────────────────
 
 class BayStateMachine:
     """
-    管理单个车位的完整状态机，线程安全。
+    Manages the complete state machine for a single parking bay, thread-safe.
 
-    回调：
-      on_led_command(code, cmd_str)        → 发 LED 指令给 ESP32（本地 MQTT）
-      on_event(code, event, payload)       → 上报事件给 Backend（云端 MQTT）
-      on_state_changed(code, payload)      → 上报状态给 Backend（云端 MQTT）
+    Callbacks:
+      on_led_command(code, cmd_str)        → send LED command to ESP32 (local MQTT)
+      on_event(code, event, payload)       → report event to Backend (cloud MQTT)
+      on_state_changed(code, payload)      → report state to Backend (cloud MQTT)
     """
 
     def __init__(
@@ -139,7 +144,7 @@ class BayStateMachine:
         self._last_distance_cm  = 0.0
         self._timer: Optional[threading.Timer] = None
 
-        logger.info(f"[{self.code}] 状态机初始化 → {self._state.value}")
+        logger.info(f"[{self.code}] State machine initialized → {self._state.value}")
 
     @property
     def state(self) -> BayState:
@@ -149,7 +154,7 @@ class BayStateMachine:
     def reservation(self) -> Optional[Reservation]:
         return self._reservation
 
-    # ── 内部工具 ──────────────────────────────────────────────────────────────
+    # ── Internal Utilities ────────────────────────────────────────────────────
 
     @staticmethod
     def _new_event_id() -> str:
@@ -170,7 +175,7 @@ class BayStateMachine:
         self._timer.daemon = True
         self._timer.start()
 
-    # ── 状态转换（发 LED + 上报 state + 上报 event）──────────────────────────
+    # ── State Transition (send LED + report state + report event) ─────────────
 
     def _transition(
         self,
@@ -183,12 +188,12 @@ class BayStateMachine:
         logger.info(f"[{self.code}] {old_state.value} → {new_state.value}"
                     + (f"  event={event.value}" if event else ""))
 
-        # 1. 发 LED 指令给 ESP32
+        # 1. Send LED command to ESP32
         cmd = LED_COMMANDS.get(new_state)
         if cmd is not None:
             self.on_led_command(self.code, cmd)
 
-        # 2. 上报状态镜像给 Backend
+        # 2. Report state mirror to Backend
         state_payload = {
             "state":            new_state.value,
             "last_distance_cm": self._last_distance_cm,
@@ -197,7 +202,7 @@ class BayStateMachine:
         }
         self.on_state_changed(self.code, state_payload)
 
-        # 3. 上报事件给 Backend
+        # 3. Report event to Backend
         if event:
             event_payload = {
                 "event":          event.value,
@@ -209,7 +214,7 @@ class BayStateMachine:
                 event_payload.update(extra)
             self.on_event(self.code, event, event_payload)
 
-    # ── 传感器更新（来自 ESP32 MQTT）─────────────────────────────────────────
+    # ── Sensor Update (from ESP32 MQTT) ──────────────────────────────────────
 
     def on_sensor_update(self, occupied: bool, distance_cm: float = 0.0):
         with self._lock:
@@ -241,17 +246,17 @@ class BayStateMachine:
             return
 
         if self._state == BayState.RESERVED_CHECKED_IN:
-            # check-in 成功后车辆离开 → 直接释放
+            # vehicle leaves after successful check-in → release immediately
             self._reservation = None
             self._transition(BayState.AVAILABLE)
 
         elif self._state == BayState.CONFLICT:
-            # strong conflict 后车辆离开：
-            # Pi 保留预约缓存，上报 available，等 Backend 决策
-            # Backend 会重发 create（恢复预约）或 release（终止）
-            logger.info(f"[{self.code}] conflict 后车辆离开，上报 available，等待 Backend 决策")
+            # vehicle leaves after strong conflict:
+            # Pi retains reservation cache, reports available, awaits Backend decision
+            # Backend will re-send create (restore reservation) or release (terminate)
+            logger.info(f"[{self.code}] Vehicle left after conflict, reporting available, awaiting Backend decision")
             self._transition(BayState.AVAILABLE)
-            # 注意：不清除 self._reservation
+            # Note: do not clear self._reservation
 
         elif (self._reservation and
               time.time() < self._reservation.expected_arrival_time + self.no_show_grace):
@@ -261,25 +266,25 @@ class BayStateMachine:
             self._reservation = None
             self._transition(BayState.AVAILABLE)
 
-    # ── LPR 识别结果 ──────────────────────────────────────────────────────────
+    # ── LPR Recognition Result ────────────────────────────────────────────────
 
     def on_lpr_result(self, plate: Optional[str], confidence: float, image_path: str):
         with self._lock:
             if self._state != BayState.PENDING_CHECK_IN:
-                logger.warning(f"[{self.code}] LPR 结果到达但状态为 {self._state.value}，忽略")
+                logger.warning(f"[{self.code}] LPR result arrived but state is {self._state.value}, ignoring")
                 return
             if not self._reservation:
-                logger.error(f"[{self.code}] 无预约记录，无法比对车牌")
+                logger.error(f"[{self.code}] No reservation record, cannot compare plate")
                 return
 
             if plate is None or confidence < self.alpr_min_confidence:
-                logger.info(f"[{self.code}] LPR 置信度不足（{confidence:.2f}），等待人工 check-in")
+                logger.info(f"[{self.code}] LPR confidence too low ({confidence:.2f}), waiting for manual check-in")
                 return
 
             plate_norm = plate.upper().replace(" ", "")
 
             if plate_norm in self._reservation.bound_plates:
-                logger.info(f"[{self.code}] LPR 匹配：{plate_norm} ✓ → auto_check_in")
+                logger.info(f"[{self.code}] LPR match: {plate_norm} ✓ → auto_check_in")
                 self._cancel_timer()
                 self._transition(
                     BayState.RESERVED_CHECKED_IN,
@@ -287,7 +292,7 @@ class BayStateMachine:
                     {"recognised_plate": plate_norm, "lpr_confidence": round(confidence, 4)},
                 )
             else:
-                logger.warning(f"[{self.code}] LPR 不匹配：{plate_norm} ∉ {self._reservation.bound_plates}")
+                logger.warning(f"[{self.code}] LPR mismatch: {plate_norm} ∉ {self._reservation.bound_plates}")
                 self._cancel_timer()
                 self._transition(
                     BayState.CONFLICT,
@@ -295,7 +300,7 @@ class BayStateMachine:
                     {"recognised_plate": plate_norm, "lpr_confidence": round(confidence, 4)},
                 )
 
-    # ── 人工 check-in（Backend 下发 action=check_in）─────────────────────────
+    # ── Manual Check-in (Backend sends action=check_in) ──────────────────────
 
     def on_manual_checkin(self):
         with self._lock:
@@ -303,18 +308,18 @@ class BayStateMachine:
                 self._cancel_timer()
                 self._transition(BayState.RESERVED_CHECKED_IN, BayEvent.CHECK_IN_CONFIRMED)
             elif self._state == BayState.CONFLICT:
-                # 恢复场景：已签到时发生 strong conflict，Backend 重发 check_in 恢复语义
-                logger.info(f"[{self.code}] conflict 中收到 check_in 恢复指令 → reserved_checked_in")
+                # Recovery: strong conflict after check-in, Backend re-sends check_in to restore
+                logger.info(f"[{self.code}] Received check_in recovery command during conflict → reserved_checked_in")
                 self._transition(BayState.RESERVED_CHECKED_IN)
             else:
-                logger.warning(f"[{self.code}] 收到 check_in，当前状态 {self._state.value}，忽略")
+                logger.warning(f"[{self.code}] Received check_in, current state {self._state.value}, ignoring")
 
-    # ── 人工 check-in 超时（只上报 state，不发 event）────────────────────────
+    # ── Manual Check-in Timeout (report state only, no event) ────────────────
 
     def _on_manual_checkin_timeout(self):
         with self._lock:
             if self._state == BayState.PENDING_CHECK_IN:
-                logger.warning(f"[{self.code}] 人工 check-in 超时 → conflict（Backend 自行处理 conflict_weak）")
+                logger.warning(f"[{self.code}] Manual check-in timeout → conflict (Backend handles conflict_weak internally)")
                 self._state = BayState.CONFLICT
                 cmd = LED_COMMANDS.get(BayState.CONFLICT)
                 if cmd:
@@ -326,36 +331,36 @@ class BayStateMachine:
                     "event_id":         self._new_event_id(),
                 })
 
-    # ── 预约创建（Backend 下发 action=create）────────────────────────────────
+    # ── Reservation Created (Backend sends action=create) ─────────────────────
 
     def on_reservation_created(self, reservation: Reservation):
         with self._lock:
             if self._state not in (BayState.AVAILABLE, BayState.RESERVED, BayState.CONFLICT):
-                logger.warning(f"[{self.code}] 车位不可预约，当前：{self._state.value}")
+                logger.warning(f"[{self.code}] Bay not available for reservation, current: {self._state.value}")
                 return
 
             self._reservation = reservation
-            logger.info(f"[{self.code}] 预约创建/恢复：{reservation.reservation_id}，"
-                        f"车牌列表：{reservation.bound_plates}")
+            logger.info(f"[{self.code}] Reservation created/restored: {reservation.reservation_id}, "
+                        f"plates: {reservation.bound_plates}")
 
             if self._state == BayState.CONFLICT:
-                # 恢复场景：conflict 中收到 create，只更新预约缓存
-                # 等车辆离开后自然回到 reserved
-                logger.info(f"[{self.code}] conflict 中恢复预约缓存，等待车辆离开后回到 reserved")
+                # Recovery: received create during conflict, only update reservation cache
+                # wait for vehicle to leave and naturally return to reserved
+                logger.info(f"[{self.code}] Restoring reservation cache during conflict, waiting for vehicle to leave to return to reserved")
             else:
                 self._transition(BayState.RESERVED)
                 delay = max(0.0, reservation.expected_arrival_time + self.no_show_grace - time.time())
                 self._start_timer(delay, self._on_no_show_check)
 
-    # ── 车牌列表更新（Backend 下发 action=update_plates）─────────────────────
+    # ── Plate List Updated (Backend sends action=update_plates) ──────────────
 
     def on_plates_updated(self, bound_plates: List[str]):
         with self._lock:
             if self._reservation:
                 self._reservation.bound_plates = [p.upper().replace(" ", "") for p in bound_plates]
-                logger.info(f"[{self.code}] 绑定车牌更新：{self._reservation.bound_plates}")
+                logger.info(f"[{self.code}] Bound plates updated: {self._reservation.bound_plates}")
 
-    # ── 预约取消/释放（Backend 下发 action=cancel/release/expire_check_in）────
+    # ── Reservation Cancelled/Released (Backend sends action=cancel/release/expire_check_in) ──
 
     def on_reservation_cancelled(self):
         with self._lock:
@@ -366,12 +371,12 @@ class BayStateMachine:
             else:
                 self._transition(BayState.AVAILABLE)
 
-    # ── No-show 检测（只上报 state，不发 event）──────────────────────────────
+    # ── No-show Detection (report state only, no event) ──────────────────────
 
     def _on_no_show_check(self):
         with self._lock:
             if self._state == BayState.RESERVED and not self._vehicle_present:
-                logger.info(f"[{self.code}] No-show → 释放车位（Backend 自行处理 no_show 事件）")
+                logger.info(f"[{self.code}] No-show → releasing bay (Backend handles no_show event internally)")
                 self._reservation = None
                 self._state = BayState.AVAILABLE
                 cmd = LED_COMMANDS.get(BayState.AVAILABLE)
@@ -384,7 +389,7 @@ class BayStateMachine:
                     "event_id":         self._new_event_id(),
                 })
 
-    # ── Resync（Backend 请求 Pi 重新上报当前状态）────────────────────────────
+    # ── Resync (Backend requests Pi to re-report current state) ──────────────
 
     def replay_state(self):
         with self._lock:
@@ -394,9 +399,9 @@ class BayStateMachine:
                 "ts":               self._now_iso(),
                 "event_id":         self._new_event_id(),
             })
-            logger.info(f"[{self.code}] resync → 重新上报状态 {self._state.value}")
+            logger.info(f"[{self.code}] resync → re-reporting state {self._state.value}")
 
-    # ── 状态快照（调试用）────────────────────────────────────────────────────
+    # ── State Snapshot (for debugging) ───────────────────────────────────────
 
     def get_snapshot(self) -> dict:
         with self._lock:

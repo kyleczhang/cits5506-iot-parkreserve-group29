@@ -1,5 +1,5 @@
 # =============================================================================
-# main.py  —  树莓派网关入口
+# main.py  —  Raspberry Pi Gateway Entry Point
 # =============================================================================
 
 import logging
@@ -27,7 +27,7 @@ def main():
     service.start()
 
     def _signal_handler(sig, frame):
-        logging.info("收到退出信号，正在停止…")
+        logging.info("Received exit signal, stopping...")
         service.stop()
         sys.exit(0)
 
