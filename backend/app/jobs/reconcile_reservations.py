@@ -1,10 +1,13 @@
-"""Safety-net reservation sweeper.
+"""Backend-driven reservation sweeper.
 
-Runs every 30 s. Closes reservations whose Pi event was missed during a
-cloud outage:
+Runs every 30 s. The backend owns the `no_show` and `conflict_weak`
+timeout decisions outright — neither event is sourced from the Pi:
 
-  * ACTIVE past arrival + 5 min, bay still AVAILABLE → synthesise `no_show`
-  * PENDING_CHECK_IN past check-in grace → synthesise `conflict_weak`
+  * ACTIVE past arrival + grace → synthesise `no_show` (regardless of the
+    current Pi-reported bay state, except when the bay is in CONFLICT —
+    that means a strong conflict is open and the reservation is being
+    deliberately preserved).
+  * PENDING_CHECK_IN past check-in grace → synthesise `conflict_weak`.
 
 The sweeper *never* synthesises `conflict_strong` — it has no LPR evidence,
 so the strong-evidence path is reserved exclusively for real Pi events
@@ -60,7 +63,7 @@ def run_once() -> dict[str, int]:
             .where(
                 Reservation.status == ReservationStatus.ACTIVE,
                 Reservation.expected_arrival_time < no_show_cutoff,
-                ParkingBay.state == BayState.AVAILABLE,
+                ParkingBay.state != BayState.CONFLICT,
             )
             .with_for_update(of=Reservation, skip_locked=True)
             .limit(100)

@@ -7,8 +7,10 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from app.extensions import db
-from app.models import BayEventKind, BayState, ParkingBay
+from app.models import BayEventKind, BayState, ParkingBay, Reservation, ReservationStatus
+from app.services.notification_service import push_bay_updated
 from app.services import event_service
+from app.extensions import socketio
 from app.utils.time import utcnow
 
 
@@ -26,12 +28,77 @@ def test_get_bay_detail(client, bays):
     body = resp.get_json()
     assert body["code"] == "A1"
     assert body["state"] == "available"
+    assert body["mirror_state"] == "available"
     assert body["current_reservation_id"] is None
 
 
 def test_get_unknown_bay_is_404(client, bays):
     resp = client.get("/api/v1/bays/Z9")
     assert resp.status_code == 404
+
+
+def test_reserved_bay_is_not_exposed_as_available_when_sensor_mirror_is_stale(
+    client,
+    session,
+    bays,
+    user_with_plates,
+):
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    reservation = Reservation(
+        bay_id=bay.id,
+        user_id=user_with_plates.id,
+        status=ReservationStatus.ACTIVE,
+        expected_arrival_time=utcnow() + timedelta(minutes=20),
+    )
+    session.add(reservation)
+    session.flush()
+    bay.current_reservation_id = reservation.id
+    bay.state = BayState.AVAILABLE
+    session.commit()
+
+    resp = client.get("/api/v1/bays/A1")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["state"] == "reserved"
+    assert body["mirror_state"] == "available"
+    assert body["current_reservation_id"] == str(reservation.id)
+
+
+def test_bay_updated_socket_uses_public_state_when_reservation_is_active(
+    app,
+    session,
+    bays,
+    user_with_plates,
+):
+    bay = session.execute(db.select(ParkingBay).where(ParkingBay.code == "A1")).scalar_one()
+    reservation = Reservation(
+        bay_id=bay.id,
+        user_id=user_with_plates.id,
+        status=ReservationStatus.ACTIVE,
+        expected_arrival_time=utcnow() + timedelta(minutes=20),
+    )
+    session.add(reservation)
+    session.flush()
+    bay.current_reservation_id = reservation.id
+    bay.state = BayState.AVAILABLE
+    session.commit()
+
+    ws = socketio.test_client(app, namespace="/ws")
+    try:
+        with app.app_context():
+            push_bay_updated(bay)
+
+        received = ws.get_received("/ws")
+    finally:
+        ws.disconnect(namespace="/ws")
+
+    assert len(received) == 1
+    assert received[0]["name"] == "bay.updated"
+    payload = received[0]["args"][0]
+    assert payload["code"] == "A1"
+    assert payload["state"] == "reserved"
+    assert payload["mirror_state"] == "available"
+    assert payload["current_reservation_id"] == str(reservation.id)
 
 
 def _seed_bay_events(app, bay_code: str, count: int = 3) -> None:

@@ -13,6 +13,8 @@ from app.extensions import db
 from app.models import (
     BayState,
     CheckInMechanism,
+    Conflict,
+    ConflictKind,
     ParkingBay,
     Reservation,
     ReservationStatus,
@@ -80,13 +82,16 @@ def test_state_back_to_available_completes_open_reservation(
     assert published[0]["reason"] == "completed"
 
 
-def test_state_back_to_available_from_conflict_publishes_abandoned_release(
+def test_state_back_to_available_after_weak_conflict_publishes_abandoned_release(
     app,
     session,
     bays,
     user_with_plates,
     monkeypatch,
 ):
+    """A weak-conflict bay that clears back to AVAILABLE is treated as
+    abandoned — the holder failed to manually check in within the grace
+    window. (Strong conflicts go through the restore branch instead.)"""
     published: list[dict] = []
     monkeypatch.setattr(
         "app.services.bay_service.publish_reservation_command",
@@ -104,6 +109,18 @@ def test_state_back_to_available_from_conflict_publishes_abandoned_release(
     bay.state = BayState.CONFLICT
     bay.current_reservation_id = res.id
     session.add(res)
+    session.flush()
+    # Explicit weak conflict on this bay — guards against the strong-restore
+    # branch accidentally firing here.
+    session.add(
+        Conflict(
+            bay_id=bay.id,
+            reservation_id=res.id,
+            kind=ConflictKind.WEAK,
+            source_event_id=uuid4(),
+            detected_at=utcnow(),
+        )
+    )
     session.commit()
 
     with app.app_context():
