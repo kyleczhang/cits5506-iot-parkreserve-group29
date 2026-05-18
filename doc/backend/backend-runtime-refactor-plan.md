@@ -1,393 +1,294 @@
-# Backend Runtime Refactor Plan
+# Backend Runtime — Current State and Refactor Notes
 
-## Overview
+## 0. Status
 
-This document proposes a structural cleanup of the backend runtime model.
+This document started life as a forward-looking refactor plan. Most of the
+refactor is now landed; what remains aspirational is called out explicitly
+in §6.
 
-The current codebase has two coupled problems:
+Quick summary of what changed and what shipped:
 
-1. Migration entrypoints are split between `flask db ...` and bare `alembic ...`.
-2. `create_app()` does more than build a Flask app: it also starts MQTT and APScheduler side effects.
+| Goal from the original plan | Status |
+|------------------------------|--------|
+| Make Alembic the only migration entrypoint | **Done** — `flask-migrate` removed; `backend/alembic.ini` is in place; Makefile / deploy script use bare Alembic. |
+| Make `create_app()` a pure factory (no MQTT, no scheduler) | **Done** — see [`app/__init__.py`](../../backend/app/__init__.py). |
+| Remove background side effects from CLI / tests / scripts | **Done** — `create_app()` no longer starts long-lived loops; `start_runtime_services(app)` is the explicit opt-in. |
+| Separate outbound publisher from inbound subscriber | **Done** — [`app/mqtt/publisher.py`](../../backend/app/mqtt/publisher.py) is publish-only; [`app/mqtt/client.py`](../../backend/app/mqtt/client.py) is subscribe-only. |
+| Split web / MQTT-worker / scheduler into three process units | **Not done.** Single-process model (one systemd unit) was chosen instead. The pure factory + opt-in runtime services preserves the *option* to split later without further refactoring. |
+| Tests pin the new runtime contract | **Done** — `test_app_factory.py`, `test_runtime_entrypoints.py`, `test_jobs_startup.py`. |
 
-These problems show up as:
+The rest of this document describes the runtime as it ships today, and
+keeps the multi-process split as a future option.
 
-- fragile Alembic configuration and path assumptions
-- `flask db upgrade` being coupled to application startup side effects
-- CLI, shell, scripts, and one-off tasks accidentally starting background services
-- unclear runtime boundaries between web, MQTT ingestion, and scheduled jobs
+---
 
-## Goals
+## 1. Why the original problems happened
 
-- Make Alembic the only migration entrypoint.
-- Make `create_app()` a pure application factory.
-- Remove background side effects from CLI, tests, and scripts by default.
-- Split long-running responsibilities into explicit runtime roles.
-- Keep existing business behaviour intact.
+The pre-refactor code had two coupled issues:
 
-## Non-Goals
+1. **Two migration entrypoints** — `flask db ...` (flask-migrate) and bare
+   `alembic ...` (CI shell + tests). Path assumptions in `alembic.ini`
+   drifted between them.
+2. **`create_app()` had side effects** — calling the factory connected to
+   MQTT and started APScheduler. So CLI commands, ad-hoc shells, one-off
+   scripts, and pytest collection would accidentally spin up background
+   loops.
 
-- Rewriting business rules
-- Replacing PostgreSQL
-- Changing MQTT topics or payload contracts
-- Introducing a full task queue such as Celery
+Symptoms included:
 
-## Proposed Runtime Model
+- `flask db upgrade` failing or running migrations in the wrong directory.
+- pytest leaving paho threads attached after a session.
+- Unclear ownership when something went wrong: was it the web request, the
+  MQTT background thread, or the scheduler?
 
-### 1. Alembic As The Only Migration Entry
+---
 
-Remove `flask-migrate` from the project.
+## 2. Current runtime model
 
-The only supported migration commands should be:
+### 2.1 One Linux process, three concerns
 
-```bash
-alembic upgrade head
-alembic downgrade base
-alembic revision --autogenerate -m "..."
+The backend ships as one systemd unit, `parkreserve-web.service`. That one
+process hosts:
+
+| Concern | Module | Threading |
+|---------|--------|-----------|
+| HTTP + Socket.IO | Flask + flask-socketio + eventlet | Main green pool |
+| Outbound MQTT publisher | [`app/mqtt/publisher.py`](../../backend/app/mqtt/publisher.py) | Paho client thread (no subscriptions) |
+| Inbound MQTT subscriber | [`app/mqtt/client.py`](../../backend/app/mqtt/client.py) | Paho client thread (subscribes + dispatches into Flask app context) |
+| `reconcile_reservations` job | [`app/jobs/reconcile_reservations.py`](../../backend/app/jobs/reconcile_reservations.py) | APScheduler background thread |
+| `purge_evidence_images` job | [`app/jobs/purge_evidence_images.py`](../../backend/app/jobs/purge_evidence_images.py) | APScheduler background thread |
+
+The single-process choice keeps deployment simple: one SQLAlchemy
+session factory, one Socket.IO emitter, no inter-process coordination.
+For one Pi, three bays, and a small dashboard user-base, vertical
+scaling on a `t3.micro` is enough.
+
+### 2.2 Eventlet monkey-patch
+
+`eventlet.monkey_patch()` must run **before** anything imports the `app`
+package. Otherwise eventlet's "upgrade existing instances" pass trips
+over Werkzeug LocalProxy objects already constructed by `app/__init__.py`
+and leaves stdlib `RLock`s un-greened, which silently breaks
+`socketio.emit()` calls from the paho background thread.
+
+So the dev entrypoint is the top-level file
+[`backend/run_dev.py`](../../backend/run_dev.py):
+
+```python
+import eventlet
+eventlet.monkey_patch()
+
+from app.web import main
+
+if __name__ == "__main__":
+    main()
 ```
 
-Project rules:
+[`app/__main__.py`](../../backend/app/__main__.py) refuses
+`python -m app` (or `python -m app.web`) with `SystemExit(2)` and a
+pointer to `run_dev.py`. `make dev` runs `run_dev.py`.
 
-- `alembic.ini` stays in `backend/`
-- `migrations/` only contains Alembic scripts and env code
-- Makefile, docs, deploy scripts, and tests all use bare Alembic
+### 2.3 Factory + opt-in runtime services
 
-### 2. Pure App Factory
-
-`create_app()` should only:
-
-- load settings
-- configure Flask
-- initialize extensions
-- register blueprints
-- register error handlers
-- import models and socket event modules needed for app assembly
-
-It should not, by default:
-
-- connect to MQTT
-- start scheduler threads
-- start any long-lived background loop
-
-### 3. Explicit Runtime Roles
-
-The backend should be split into three explicit process roles.
-
-#### Web Process
-
-Responsibilities:
-
-- HTTP API
-- Socket.IO
-- database writes
-- outbound MQTT command publishing
-
-Does not own:
-
-- inbound MQTT subscription loop
-- APScheduler jobs
-
-Suggested entrypoints:
-
-- `app.web:main`
-- `app:create_wsgi_app()` for Gunicorn/WSGI only
-
-#### MQTT Worker
-
-Responsibilities:
-
-- connect to the broker
-- subscribe to inbound MQTT topics
-- dispatch inbound state/event messages into the service layer
-- handle reconnect and replay behaviour
-
-Does not own:
-
-- HTTP serving
-- scheduler jobs
-
-Suggested entrypoint:
-
-- `app.web:main`
-
-#### Scheduler Worker
-
-Responsibilities:
-
-- run `reconcile_reservations`
-- run `purge_evidence_images`
-
-Does not own:
-
-- HTTP serving
-- inbound MQTT subscription
-
-Suggested entrypoint:
-
-- `app.web:main`
-
-## MQTT Responsibilities
-
-This is the most important boundary to get right.
-
-### Inbound MQTT
-
-Inbound consumption should live only in the MQTT worker.
-
-That worker owns:
-
-- broker connection lifecycle
-- topic subscriptions
-- handler registration
-- background loop
-
-### Outbound MQTT
-
-The web process still needs to publish commands for flows such as:
-
-- create reservation
-- cancel reservation
-- update plates
-
-But it should not depend on a long-lived app-attached subscriber client.
-
-Recommended approach:
-
-- extract a dedicated outbound publisher abstraction
-- let web-facing services call that publisher
-- keep outbound publishing separate from inbound subscriber lifecycle
-
-This avoids tying web request handling to a background consumer process model.
-
-## Health Check Semantics
-
-After the split, health endpoints should reflect process ownership.
-
-### `/healthz`
-
-Meaning:
-
-- the web process is alive
-
-### `/readyz`
-
-Meaning:
-
-- the web process can serve requests
-- database access works
-- required configuration is valid
-
-It should not directly report inbound MQTT worker liveness as if that were part of web readiness.
-
-Worker health should instead be handled by their own process supervision and logs.
-
-## Required Code Changes
-
-### A. Remove `flask-migrate`
-
-Files likely affected:
-
-- `backend/pyproject.toml`
-- `backend/app/extensions.py`
-- `backend/Makefile`
-- any docs or tests still mentioning `flask db`
-
-Changes:
-
-- remove `flask-migrate` dependency
-- remove `Migrate(...)` extension wiring
-- remove `migrate.init_app(app, db)`
-- replace `flask db ...` commands with `alembic ...`
-
-### B. Restore Alembic Layout
-
-Rules:
-
-- move `alembic.ini` back to `backend/alembic.ini`
-- keep `migrations/env.py` loading config from the normal bare Alembic layout
-
-Why:
-
-- deploy scripts already use bare Alembic
-- migration tests already assume bare Alembic
-- this avoids adapting the project to Flask-Migrate-specific expectations
-
-### C. Pure `create_app()`
-
-Current anti-pattern:
-
-- `create_app()` defaults to starting MQTT and scheduler side effects in non-test contexts
-
-Target contract:
+`backend/app/__init__.py` exposes three entrypoints:
 
 ```python
 def create_app(*, settings: Settings | None = None) -> Flask:
-    ...
+    """Pure factory. No MQTT. No scheduler. Safe for tests, CLI, scripts."""
+
+def start_runtime_services(app: Flask) -> None:
+    """Attach MQTT publisher + subscriber + both schedulers. Idempotent."""
+
+def create_wsgi_app() -> Flask:
+    """create_app() then start_runtime_services(). Used by app.web.main()."""
 ```
 
-or, if a temporary transition flag is still needed:
+`start_runtime_services` registers an `atexit` cleanup that calls
+`stop_runtime_services(app)` (publisher + subscriber stop, schedulers
+shut down). `app.extensions["_runtime_started"]` / `"_runtime_stopped"`
+flags keep both halves idempotent.
 
-```python
-def create_app(*, settings: Settings | None = None, start_background: bool = False) -> Flask:
-    ...
+This gives us the testability of a pure factory **and** a single
+production WSGI entrypoint that does the right thing on boot.
+
+### 2.4 MQTT split (publisher vs subscriber)
+
+The two paho clients are distinct objects with distinct lifecycles:
+
+- The **publisher** (`PahoPublisher`) never subscribes and never sets an
+  `on_message`. Its `on_connect` does nothing beyond setting a "connected"
+  event for tests. It is the only client that the HTTP request path
+  touches.
+- The **subscriber** (`MQTTClient`) connects, subscribes to
+  `cloud/bay/+/state`, `cloud/bay/+/event`, and `cloud/system/heartbeat`,
+  registers handlers ([`app/mqtt/handlers.py`](../../backend/app/mqtt/handlers.py)),
+  and publishes one `cloud/system/resync` on every (re)connect.
+
+Application code only ever calls the publisher
+([`app/services/mqtt_publisher.publish_reservation_command`](../../backend/app/services/mqtt_publisher.py)).
+If MQTT is disabled (`MQTT_ENABLED=false`) the publisher is `None` and
+the helper logs `mqtt.command_skipped_disabled` — the business state
+still mutates, the test still passes, no broker is required.
+
+### 2.5 Health endpoints
+
+Reflect the single-process reality:
+
+- **`/healthz`** — process liveness. No I/O. Always 200 while Flask is
+  serving requests.
+- **`/readyz`** — runs `SELECT 1` against the DB. Returns 200 on success
+  or 503 on failure. Does **not** assert MQTT readiness — outbound
+  publish is best-effort and the business path degrades gracefully when
+  the broker is down (services log a "skipped" line and continue), so
+  tying readiness to MQTT would create false negatives.
+
+If we ever do the worker split in §6, worker liveness will be reported
+through their own logs / systemd, not through `/readyz`.
+
+---
+
+## 3. Migrations
+
+### 3.1 Bare Alembic
+
+`flask-migrate` is gone. There is one canonical path:
+
+```bash
+cd backend
+make migrate                          # alembic upgrade head
+make revision m="describe change"    # alembic revision --autogenerate
 ```
 
-The default must be side-effect free.
+Both wrap `.venv/bin/alembic`. `backend/alembic.ini` is the single config.
+`backend/migrations/env.py` imports `app.extensions.Base` and the `app.models`
+package so `target_metadata = Base.metadata` covers every table.
 
-### D. Add Explicit Entrypoints
+### 3.2 Migrations directory
 
-Suggested new files:
+```
+backend/migrations/
+├── env.py
+├── script.py.mako
+└── versions/
+    ├── 20260421_01_initial.py
+    └── 20260513_01_conflict_resolution_user_cancelled.py
+```
 
-- `backend/app/web.py`
-- `backend/app/mqtt_worker.py`
-- `backend/app/scheduler.py`
+`deploy/bootstrap.sh` runs `.venv/bin/alembic upgrade head` before the
+systemd service starts. Tests run real migrations via
+`test_alembic_migration.py`.
 
-Responsibilities:
+---
 
-- `web.py` starts the API and Socket.IO server
-- `mqtt_worker.py` starts inbound MQTT consumption
-- `scheduler.py` starts periodic jobs
+## 4. Testing the runtime contract
 
-### E. Separate Outbound Publisher
+Three modules pin the new boundaries:
 
-Files likely affected:
+- **`test_app_factory.py`** — `create_app()` does not start the scheduler;
+  does not connect to MQTT by default; registers blueprints; returns a
+  Flask app that can serve `/healthz` without any extra wiring.
+- **`test_runtime_entrypoints.py`** — `start_runtime_services` is
+  idempotent; `stop_runtime_services` is idempotent; `create_wsgi_app`
+  starts services exactly once.
+- **`test_jobs_startup.py`** — scheduler jobs register with the right
+  ids and intervals, and shut down cleanly.
 
-- `backend/app/services/mqtt_publisher.py`
-- call sites in reservation and plate services
-- MQTT client abstractions
+Plus the existing MQTT contract suites
+(`test_publisher.py`, `test_mqtt_client.py`, `test_mqtt_handlers.py`,
+`test_mqtt_init.py`, `test_mqtt_topics.py`, `test_mqtt_commands.py`,
+`test_mqtt_ingest.py`, `test_resilience_reconnect.py`).
 
-Target behaviour:
+Coverage gate is `fail_under = 90` (see `[tool.coverage.report]`).
 
-- outbound publish remains available to web requests
-- inbound subscriber client is no longer stored as a general-purpose app singleton
+---
 
-## Makefile Changes
+## 5. Operational notes
 
-Suggested commands:
+### 5.1 Makefile
+
+The canonical commands are now bare Alembic + `run_dev.py`:
 
 ```makefile
 migrate:
-	.venv/bin/alembic upgrade head
+    .venv/bin/alembic upgrade head
 
 revision:
-	.venv/bin/alembic revision --autogenerate -m "$(m)"
+    .venv/bin/alembic revision --autogenerate -m "$(m)"
 
 dev:
-	.venv/bin/python -m app.web
+    .venv/bin/python run_dev.py
 ```
 
-Optional:
+Additional targets seed scenario datasets (`seed-ready`, `seed-conflict`,
+`seed-checked-in`, `seed-history`) and the `reset-run` combo
+(`down → up → migrate → seed → dev`).
 
-```makefile
-migrate-down:
-	.venv/bin/alembic downgrade base
+### 5.2 Deploy
+
+```
+backend/deploy/
+├── parkreserve-web.service     # single systemd unit
+├── Caddyfile                   # auto-HTTPS reverse proxy
+└── bootstrap.sh                # alembic upgrade head before restart
 ```
 
-## Deploy Changes
+The `[Service]` entrypoint is `python run_dev.py` (we use the same
+entrypoint in prod for now; if/when we move to gunicorn workers, the
+unit will swap to `gunicorn -k eventlet -w 1 'app:create_wsgi_app()'`).
 
-Production uses one service unit:
+### 5.3 Local dev MQTT
 
-- `parkreserve-web.service`
+`docker/docker-compose.yml` brings up Mosquitto on localhost:1883 with
+no auth. `MQTT_TLS=false`, `MQTT_USERNAME` / `MQTT_PASSWORD` unset. In
+prod, HiveMQ Cloud over TLS:8883 with username/password.
 
-This single process owns HTTP, Socket.IO, inbound/outbound MQTT, and the
-background scheduler jobs.
+---
 
-`deploy/bootstrap.sh` should keep using:
+## 6. Future: multi-process split (not done)
 
-```bash
-.venv/bin/alembic upgrade head
-```
+The pure factory + opt-in runtime services leaves the door open to
+splitting concerns into separate processes:
 
-## Test Strategy
+| Process | Owns |
+|---------|------|
+| Web | HTTP, Socket.IO, outbound MQTT publisher |
+| MQTT worker | Inbound subscriber + handlers |
+| Scheduler | `reconcile_reservations` + `purge_evidence_images` |
 
-The new runtime contract should be pinned by tests.
+What would need to change:
 
-### 1. App Factory Tests
+- A second entrypoint that calls `create_app()` and starts **only** the
+  MQTT subscriber (and not the publisher / scheduler).
+- A third entrypoint that calls `create_app()` and starts **only** the
+  schedulers.
+- Three systemd units. Caddy still fronts only the web unit.
+- Socket.IO would need a Redis (or similar) message queue if the MQTT
+  worker is going to broadcast `bay.updated` to web-connected clients —
+  today both halves are in-process and `socketio.emit` reaches WS clients
+  directly. This is the main reason the split has not happened yet.
+- `/readyz` would stay focused on web-process needs; MQTT worker and
+  scheduler liveness would surface through their own systemd journals
+  and metrics (not the HTTP readiness probe).
 
-Examples:
+Reasons to actually do this later: multiple web workers behind a load
+balancer (publishing the same reservation command from two processes is
+fine, ingesting the same Pi event from two subscribers is not), or
+isolating crash domains so a slow paho handler doesn't pause HTTP
+requests.
 
-- `create_app()` does not start schedulers
-- `create_app()` does not initialize inbound MQTT by default
-- explicit runtime entrypoints start only what they own
+For the current scale (one Pi, three bays, demo dashboard usage) the
+single process is simpler and the runtime contract tests pin the
+boundaries we'll need when the split happens.
 
-### 2. Alembic Smoke Contract
+---
 
-At minimum, validate:
+## 7. Tradeoffs we accepted
 
-```bash
-alembic upgrade head
-alembic downgrade base
-```
-
-This should be enforced either in CI shell steps or dedicated migration coverage.
-
-### 3. Outbound MQTT Contract
-
-Keep tests that prove:
-
-- reservation creation publishes a command
-- cancellation publishes a command
-- plate updates publish when required
-
-These tests should mock the outbound publisher and avoid real broker dependency.
-
-### 4. MQTT Worker Contract
-
-Worker-level tests should verify:
-
-- handlers are registered
-- inbound messages dispatch correctly
-- reconnect and replay logic remain intact
-
-## Recommended Rollout Plan
-
-### Phase 1
-
-- move `alembic.ini` back to `backend/`
-- remove `flask-migrate`
-- update Makefile to use bare Alembic
-- update docs, deploy script references, and migration tests
-
-### Phase 2
-
-- remove background startup from default app factory behaviour
-- keep CLI, scripts, and tests side-effect free
-- add app factory contract tests
-
-### Phase 3
-
-- introduce explicit `web`, `mqtt_worker`, and `scheduler` entrypoints
-- move inbound MQTT and scheduler startup out of the web process
-
-### Phase 4
-
-- cleanly separate outbound MQTT publish logic from inbound subscriber lifecycle
-- adjust readiness semantics if needed
-- split production service units
-
-## Tradeoffs
-
-### Benefits
-
-- one migration path instead of two
-- clean app factory semantics
-- no hidden CLI side effects
-- clearer process ownership
-- safer future scaling beyond a single web worker
-
-### Costs
-
-- more moving parts at runtime
-- more deployment wiring
-- some refactor work around MQTT publishing
-
-## Conclusion
-
-This plan fixes the real architectural issue rather than only patching a symptom.
-
-If the only goal is to make `make migrate` work again, a local path fix is enough.
-If the goal is to make migrations, CLI usage, tests, and runtime boundaries stable over time, this refactor is the stronger solution:
-
-- Alembic as the only migration interface
-- pure app factory semantics
-- explicit web/MQTT/scheduler runtime roles
-- tests that lock these contracts in place
+| Decision | Why we chose this |
+|----------|-------------------|
+| One systemd unit instead of three | Demo scale doesn't justify the operational overhead; pure factory keeps the split option open. |
+| Outbound publisher is a separate paho client | Decoupling means a publish-only broker hiccup can't break the inbound subscription loop (and vice-versa), at the cost of one extra TCP connection. |
+| Schedulers in-process, no Celery | APScheduler covers the two periodic jobs with zero external dependencies. |
+| `/readyz` tied to DB only | MQTT is best-effort; surfacing every MQTT blip as "not ready" would make health checks noisy. |
+| `run_dev.py` outside the `app/` package | Required so `eventlet.monkey_patch()` runs before any `app` import. |
+| Same entrypoint in dev and prod | Avoids drift between `make dev` behaviour and production behaviour. Both call `create_wsgi_app()` → `start_runtime_services()`. |
