@@ -1,7 +1,3 @@
-# =============================================================================
-# tests/test_state_machine.py  —  状态机单元测试（对齐接口文档）
-# =============================================================================
-
 import time
 import pytest
 from unittest.mock import MagicMock
@@ -36,9 +32,6 @@ def make_reservation(plates=None, arrival_offset=60):
         expected_arrival_time=time.time() + arrival_offset,
     )
 
-
-# ── 基础状态转换 ───────────────────────────────────────────────────────────────
-
 class TestBasicTransitions:
 
     def test_initial_state_is_available(self):
@@ -54,7 +47,6 @@ class TestBasicTransitions:
     def test_casual_vehicle_arrives(self):
         sm, on_led, _, __ = make_sm()
         sm.on_sensor_update(True, 12.0)
-        # 无预约 → occupied
         assert sm.state == BayState.OCCUPIED
         on_led.assert_called_with("A1", {"color": "red", "blink": False, "buzzer": False})
 
@@ -75,16 +67,12 @@ class TestBasicTransitions:
     def test_state_changed_callback_called_on_transition(self):
         sm, _, __, on_state_changed = make_sm()
         sm.on_sensor_update(True, 12.0)
-        # on_state_changed 应该被调用
         assert on_state_changed.called
         payload = on_state_changed.call_args[0][1]
         assert payload["state"] == "occupied"
         assert "last_distance_cm" in payload
         assert "ts" in payload
         assert "event_id" in payload
-
-
-# ── LPR 结果处理 ───────────────────────────────────────────────────────────────
 
 class TestLPRResults:
 
@@ -116,7 +104,6 @@ class TestLPRResults:
         assert BayEvent.CONFLICT_STRONG in events
 
     def test_lpr_mismatch_event_has_plate_and_confidence(self):
-        """接口文档要求 conflict_strong 事件携带 recognised_plate 和 lpr_confidence。"""
         self.sm.on_lpr_result("9ZZZ999", 0.95, "/tmp/test.jpg")
         conflict_calls = [c for c in self.on_event.call_args_list
                           if c.args[1] == BayEvent.CONFLICT_STRONG]
@@ -126,7 +113,6 @@ class TestLPRResults:
         assert 0 <= payload["lpr_confidence"] <= 1
 
     def test_lpr_auto_checkin_event_has_plate_and_confidence(self):
-        """接口文档要求 auto_check_in 事件携带 recognised_plate 和 lpr_confidence。"""
         self.sm.on_lpr_result("1ABC234", 0.95, "/tmp/test.jpg")
         checkin_calls = [c for c in self.on_event.call_args_list
                          if c.args[1] == BayEvent.AUTO_CHECK_IN]
@@ -136,15 +122,12 @@ class TestLPRResults:
         assert 0 <= payload["lpr_confidence"] <= 1
 
     def test_lpr_low_confidence_stays_pending(self):
-        self.sm.on_lpr_result("1ABC234", 0.60, "/tmp/test.jpg")  # 低于 0.80
+        self.sm.on_lpr_result("1ABC234", 0.60, "/tmp/test.jpg")  
         assert self.sm.state == BayState.PENDING_CHECK_IN
 
     def test_lpr_none_stays_pending(self):
         self.sm.on_lpr_result(None, 0.0, "/tmp/test.jpg")
         assert self.sm.state == BayState.PENDING_CHECK_IN
-
-
-# ── 人工 check-in ──────────────────────────────────────────────────────────────
 
 class TestManualCheckin:
 
@@ -167,9 +150,6 @@ class TestManualCheckin:
         events = [c.args[1] for c in on_event.call_args_list]
         assert BayEvent.CONFLICT_WEAK in events
 
-
-# ── update_plates ──────────────────────────────────────────────────────────────
-
 class TestUpdatePlates:
 
     def test_update_plates_changes_bound_list(self):
@@ -179,7 +159,6 @@ class TestUpdatePlates:
         assert "9NEW999" in sm.reservation.bound_plates
 
     def test_updated_plate_matches_lpr(self):
-        """车牌更新后，LPR 应能匹配新车牌。"""
         sm, _, on_event, __ = make_sm()
         sm.on_reservation_created(make_reservation(plates=["1ABC234"]))
         sm.on_plates_updated(["1ABC234", "9NEW999"])
