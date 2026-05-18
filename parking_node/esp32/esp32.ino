@@ -11,20 +11,20 @@
 // [1] Configuration Area - Centralized parameters
 // =========================================================
 // Network & Gateway Configuration
-const char* ssid = "nubia Z50S Pro";
-const char* password = "YOUR_WIFI_PASSWORD"; // Reminder: Replace with actual password
-const char* gateway_ip = "192.168.205.120";  // Gateway IP (e.g., your PC or Raspberry Pi)
+const char* ssid = "Kong";
+const char* password = "55555555"; // Reminder: Replace with actual password
+const char* gateway_ip = "10.52.64.37";  // Gateway IP (e.g., your PC or Raspberry Pi)
 const int   gateway_port = 5000;
-const char* api_path = "/api/v1/bays/1/image"; // RESTful API path
+const char* api_path = "/api/v1/bays/A1/image"; // RESTful API path
 
 // 🛡️ Security Key (Must match the server.py configuration)
 const char* api_secret_key = "ParkReserve-Group29-SuperSecret";
 
 // MQTT Configuration
-const char* mqtt_server = "192.168.205.120"; 
+const char* mqtt_server = "10.52.64.37"; 
 const int   mqtt_port = 1883;
-const char* mqtt_topic_led    = "bay/1/led";     
-const char* mqtt_topic_status = "bay/1/status";  
+const char* mqtt_topic_led    = "bay/A1/led";     
+const char* mqtt_topic_status = "bay/A1/status";  
 
 // NTP Time Configuration (AWST: UTC+8 for Perth, Western Australia)
 const char* ntpServer = "pool.ntp.org";
@@ -78,7 +78,6 @@ String lastBayStatus = "available";
 int occupiedCount = 0;  
 int availableCount = 0; 
 // Filter Limit: Read every 200ms. 10 times = 2 seconds of continuous confirmation.
-// This perfectly filters out pedestrians walking by.
 const int FILTER_LIMIT = 10; 
 
 unsigned long lastSensorReadMillis = 0; 
@@ -89,6 +88,13 @@ const long PUBLISH_INTERVAL = 2000;
 
 unsigned long lastRetryMillis = 0;
 const long RETRY_INTERVAL = 10000; // Check for failed uploads every 10 seconds
+
+// =========================================================
+// [NEW] Asynchronous capture timer variables
+// =========================================================
+bool isWaitingToCapture = false;          // Whether currently waiting to capture
+unsigned long captureWaitStartMillis = 0; // Timestamp when waiting started
+const unsigned long CAPTURE_DELAY = 3000; // Wait 3 seconds after stabilizing before capturing
 
 // =========================================================
 // [3] Time & Network Module
@@ -128,7 +134,42 @@ String getUploadUrl() {
 // [4] Storage & Retry Module (Blackbox Mechanism)
 // =========================================================
 
-// Stream file directly from TF card to HTTP (Memory efficient)
+void cleanupSD() {
+  Serial.println("🧹 Starting SD Card cleanup...");
+  File root = SD.open("/");
+  if (!root) return;
+
+  File file = root.openNextFile();
+  while (file) {
+    String fileName = file.name();
+    if (!file.isDirectory() && (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg"))) {
+      String path = "/" + fileName;
+      if (SD.remove(path)) {
+        Serial.println("   Deleted old image: " + path);
+      }
+    }
+    file = root.openNextFile();
+  }
+  Serial.println("✅ Cleanup finished. config.txt preserved.");
+}
+
+time_t getFileTime(String filename) {
+  if (filename.length() < 20) return 0;
+  
+  struct tm t;
+  String ts = filename.substring(5, 20); 
+  
+  t.tm_year = ts.substring(0, 4).toInt() - 1900;
+  t.tm_mon  = ts.substring(4, 6).toInt() - 1;
+  t.tm_mday = ts.substring(6, 8).toInt();
+  t.tm_hour = ts.substring(9, 11).toInt();
+  t.tm_min  = ts.substring(11, 13).toInt();
+  t.tm_sec  = ts.substring(13, 15).toInt();
+  t.tm_isdst = -1;
+
+  return mktime(&t);
+}
+
 bool uploadImageFromSD(String filepath) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -142,50 +183,63 @@ bool uploadImageFromSD(String filepath) {
   http.begin(getUploadUrl());
   http.addHeader("Content-Type", "image/jpeg");
   
-  // 🛡️ Security & Telemetry Headers
   http.addHeader("X-API-Key", api_secret_key);
-  String timestamp = filepath.substring(5, 20); // Extract timestamp from filename
+  String timestamp = filepath.substring(5, 20); 
   http.addHeader("X-Timestamp", timestamp);
 
   Serial.println("📤 Uploading: " + filepath + " to " + getUploadUrl());
   
-  // Stream the file payload directly
   int httpResponseCode = http.sendRequest("POST", &file, file.size());
   file.close();
 
-  bool success = (httpResponseCode == 200 || httpResponseCode == 202);
-  if (success) {
-    Serial.printf("✅ Upload success! HTTP Response: %d\n", httpResponseCode);
+  bool success = false;
+  if (httpResponseCode > 0) {
+    if (httpResponseCode == 200 || httpResponseCode == 202) {
+      Serial.printf("✅ Upload success! HTTP Response: %d\n", httpResponseCode);
+      success = true;
+    } else {
+      Serial.printf("⚠️ Server rejected the request! HTTP Code: %d\n", httpResponseCode);
+      String responseBody = http.getString();
+      Serial.println("🔍 Server error details: " + responseBody);
+    }
   } else {
-    Serial.printf("❌ Upload failed! HTTP Response: %d\n", httpResponseCode);
+    Serial.printf("❌ TCP Connection failed! Internal Error Code: %d\n", httpResponseCode);
+    Serial.printf("🔍 Detailed Reason: %s\n", http.errorToString(httpResponseCode).c_str());
   }
   http.end();
   
   return success;
 }
 
-// Background Daemon: Scan TF card and retry failed uploads
 void processPendingUploads() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  File root = SD.open("/");
-  if (!root) return;
+  time_t now;
+  time(&now);
 
+  File root = SD.open("/");
   File file = root.openNextFile();
+  
   while (file) {
     String filename = file.name();
-    // Look for pending files starting with "img_"
-    if (!file.isDirectory() && filename.startsWith("img_") && filename.endsWith(".jpg")) {
+    if (!file.isDirectory() && filename.startsWith("img_")) {
       String filepath = "/" + filename;
-      Serial.println("🔄 Retry daemon found pending file: " + filepath);
-      
-      if (uploadImageFromSD(filepath)) {
-        // Archive the file by renaming it to "uploaded_..." upon success
-        String newFilepath = "/uploaded_" + filename.substring(4);
-        SD.rename(filepath.c_str(), newFilepath.c_str());
-        Serial.println("📦 File archived as: " + newFilepath);
+      time_t fileTime = getFileTime(filename);
+      double diff = difftime(now, fileTime);
+
+      if (diff > 10.0) {
+        Serial.printf("🗑️ Expired (%.1fs old): %s. Deleting...\n", diff, filename.c_str());
+        file.close(); 
+        SD.remove(filepath);
+      } 
+      else {
+        Serial.printf("🔄 Valid for retry (%.1fs old): %s\n", diff, filename.c_str());
+        if (uploadImageFromSD(filepath)) {
+          String newPath = "/uploaded_" + filename.substring(4);
+          SD.rename(filepath.c_str(), newPath.c_str());
+        }
       }
-      break; // Process only one file per loop to prevent blocking the main thread
+      break; 
     }
     file = root.openNextFile();
   }
@@ -197,8 +251,24 @@ void processPendingUploads() {
 
 // Core Action: Capture -> Save locally -> Trigger Upload
 void captureAndUpload() {
-  Serial.println("📸 Capturing image for LPR...");
-  camera_fb_t * fb = esp_camera_fb_get();
+  Serial.println("📸 Waking up camera and flushing old frames...");
+  
+  // =========================================================
+  // 🌟 Core Fix: Burst capture and discard old frames to clear the underlying hardware buffer queue.
+  // Discarding the first 1~2 frames is enough to clear stale images, allowing the sensor to re-expose and focus.
+  // =========================================================
+  camera_fb_t * fb = NULL;
+  for (int i = 0; i < 2; i++) {
+    fb = esp_camera_fb_get();
+    if (fb) {
+      esp_camera_fb_return(fb); // Discard and release immediately after getting it
+    }
+  }
+
+  Serial.println("📸 Capturing FRESH image for LPR...");
+  // The frame obtained this time is absolutely the latest and most accurately exposed current image!
+  fb = esp_camera_fb_get(); 
+  
   if(!fb) {
     Serial.println("❌ Camera capture failed!");
     return;
@@ -212,9 +282,11 @@ void captureAndUpload() {
   if(file){
     file.write(fb->buf, fb->len); 
     file.close();
-    Serial.println("💾 Image saved locally: " + filepath);
+    Serial.println("💾 Fresh image saved locally: " + filepath);
   }
-  esp_camera_fb_return(fb); // Free memory buffer
+  
+  // Remember to release the memory of this last useful frame
+  esp_camera_fb_return(fb); 
 
   // 2. Attempt immediate upload
   if (uploadImageFromSD(filepath)) {
@@ -256,7 +328,6 @@ bool initCamera() {
   config.jpeg_quality = 10; 
   config.fb_count = 1;
 
-  // 🌟 Crucial: Check PSRAM and force frame buffer to external memory
   if (psramFound()) {
     config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
@@ -266,11 +337,12 @@ bool initCamera() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) return false;
-  return true;
-}
-
-bool initSD() {
-  if (!SD.begin(SD_CS_PIN)) return false;
+  
+  sensor_t * s = esp_camera_sensor_get();
+  if (s != NULL) {
+    s->set_hmirror(s, 1);  
+    Serial.println("✅ Camera hardware mirror enabled.");
+  }
   return true;
 }
 
@@ -293,13 +365,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   for (int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  
+  Serial.printf("message: %s\n", message);
+  Serial.printf("Topic: %s\n", String(topic));
   if (String(topic) == mqtt_topic_led && message != currentLedState) {
     currentLedState = message;
     previousBlinkMillis = millis();
     blinkState = true; 
     
-    // Reset all actuators before applying new state
     digitalWrite(PIN_RED, LOW);
     digitalWrite(PIN_YELLOW, LOW);
     digitalWrite(PIN_GREEN, LOW);
@@ -309,7 +381,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void reconnect() {
   while (!client.connected()) {
-    String clientId = "ESP32Client-Bay1-";
+    String clientId = "ESP32Client-BayA1-";
     clientId += String(random(0xffff), HEX);
     if (client.connect(clientId.c_str())) {
       client.subscribe(mqtt_topic_led); 
@@ -340,12 +412,15 @@ void setup() {
   setup_wifi();
   
   if(initCamera()) Serial.println("✅ Camera Init OK");
-  if(initSD()) Serial.println("✅ TF Card Init OK");
+  if (SD.begin(SD_CS_PIN)) {
+    Serial.println("✅ SD Card Mounted");
+    cleanupSD(); 
+    Serial.println("✅ SD Card Cleaned");
+  }
   
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 }
-
 void loop() {
   if (!client.connected()) reconnect();
   client.loop(); 
@@ -367,50 +442,105 @@ void loop() {
     lastSensorReadMillis = currentMillis;
     float dist = getDistance();
     
+    // 🆕 [DEBUG LOG 1] Print sensor status and distance heartbeat every 1 second
+    static unsigned long lastDebugPrintMillis = 0;
+    if (currentMillis - lastDebugPrintMillis >= 1000) {
+        Serial.printf("📊 [Sensor] Dist: %.1f cm | OccCnt: %d | AvailCnt: %d | Bay: %s | LED: %s\n", 
+                      dist, occupiedCount, availableCount, currentBayStatus.c_str(), currentLedState.c_str());
+        lastDebugPrintMillis = currentMillis;
+    }
+
     if (dist > 0) {
-      // Action 1: Vehicle is parking and stabilizing (distance < parking threshold)
       if (dist <= DIST_OCCUPIED) {
         occupiedCount++;
-        availableCount = 0; // Reset leaving counter
+        availableCount = 0; 
       } 
-      // Action 2: Vehicle is driving out or bay is empty (distance > leaving threshold)
       else if (dist >= DIST_AVAILABLE || dist == 999.0) {
         availableCount++;
-        occupiedCount = 0;  // Reset parking counter
+        occupiedCount = 0;  
       }
-      // Action 3: Hysteresis zone (100cm - 150cm) -> Do nothing to prevent jitter
       else {
+        // 🆕 [DEBUG LOG 2] Vehicle is in the deadzone (100cm ~ 150cm), reset counters
+        if (occupiedCount > 0 || availableCount > 0) {
+            Serial.printf("⚠️ [Sensor] Distance in deadzone (%.1f cm). Resetting counts.\n", dist);
+        }
         occupiedCount = 0;
         availableCount = 0;
       }
 
-      // State flip confirmation
       if (occupiedCount >= FILTER_LIMIT && currentBayStatus != "occupied") {
+        // 🆕 [DEBUG LOG 3] Confirm 10 consecutive reads meet the threshold
+        Serial.println("🔒 [State Change] 10 consecutive reads < 100cm. Bay is now OCCUPIED.");
         currentBayStatus = "occupied";
         occupiedCount = 0; 
       } 
       else if (availableCount >= FILTER_LIMIT && currentBayStatus != "available") {
+        // 🆕 [DEBUG LOG 3] Confirm 10 consecutive reads meet the threshold
+        Serial.println("🔓 [State Change] 10 consecutive reads > 150cm. Bay is now AVAILABLE.");
         currentBayStatus = "available";
         availableCount = 0; 
       }
 
       // 🌟 FALLING EDGE TRIGGER: Vehicle successfully parked!
       if (currentBayStatus == "occupied" && lastBayStatus == "available") {
-        Serial.println("\n>>> EVENT: Vehicle Successfully Parked! <<<");
+        Serial.println("\n>>> EVENT: Vehicle Entering... <<<");
         
         client.publish(mqtt_topic_status, "occupied");
         lastPublishMillis = currentMillis; 
         
+        // 🆕 [DEBUG LOG 4] Print current LED state to determine if capture conditions are met
+        Serial.printf("🔍 Checking Capture Conditions -> Current LED State: %s\n", currentLedState.c_str());
+
         if (currentLedState == "reserved" || currentLedState == "pending_check_in") {
-          captureAndUpload(); 
+          Serial.println("⏳ Valid state! Waiting 3 seconds for vehicle to stabilize...");
+          isWaitingToCapture = true;
+          captureWaitStartMillis = currentMillis; 
+        } else {
+          // 💡 Often times it's because it doesn't pass here, making it look "stuck"
+          Serial.println("⏭️ Skipping camera capture: LED state is NOT 'reserved' or 'pending_check_in'.");
         }
       }
+
+      // 🆕 [DEBUG LOG 5] RISING EDGE TRIGGER: Vehicle leaving event
+      if (currentBayStatus == "available" && lastBayStatus == "occupied") {
+        Serial.println("\n<<< EVENT: Vehicle Leaving... <<<");
+        client.publish(mqtt_topic_status, "available");
+        lastPublishMillis = currentMillis; 
+        isWaitingToCapture = false; // Cancel immediately if still counting down for capture
+      }
+      
       lastBayStatus = currentBayStatus; 
     }
   }
 
   // ---------------------------------------------------------
-  // Task 3: MQTT Heartbeat Publish
+  // 🌟 Task 3: Asynchronous Capture Execution (Delayed capture after vehicle stabilizes)
+  // ---------------------------------------------------------
+  if (isWaitingToCapture) {
+    // 🆕 [DEBUG LOG] Print 3-second countdown to prove the program hasn't crashed and is waiting
+    static unsigned long lastWaitLogMillis = 0;
+    if (currentMillis - lastWaitLogMillis >= 1000) {
+        long remaining = CAPTURE_DELAY - (currentMillis - captureWaitStartMillis);
+        if (remaining > 0) {
+            Serial.printf("⏱️ Capture countdown: %ld ms remaining...\n", remaining);
+        }
+        lastWaitLogMillis = currentMillis;
+    }
+
+    if (currentMillis - captureWaitStartMillis >= CAPTURE_DELAY) {
+      // Ultimate safety check: Is the car still there? (Prevent false triggers)
+      if (currentBayStatus == "occupied") {
+        Serial.println("📸 Vehicle stabilized! Executing capture...");
+        captureAndUpload();
+      } else {
+        Serial.println("🚫 Vehicle left before capture. Action cancelled.");
+      }
+      isWaitingToCapture = false; // Task finished, reset state
+    }
+  }
+
+  // ---------------------------------------------------------
+  // Task 4: MQTT Heartbeat Publish
   // ---------------------------------------------------------
   if (currentMillis - lastPublishMillis >= PUBLISH_INTERVAL) {
     lastPublishMillis = currentMillis;
@@ -418,9 +548,9 @@ void loop() {
   }
 
   // ---------------------------------------------------------
-  // Task 4: Indicator State Machine
+  // Task 5: Indicator State Machine
   // ---------------------------------------------------------
-  if (currentLedState == "available") {
+  if (currentLedState == "available") { 
     digitalWrite(PIN_GREEN, HIGH);
     digitalWrite(PIN_YELLOW, LOW);
     digitalWrite(PIN_RED, LOW);
