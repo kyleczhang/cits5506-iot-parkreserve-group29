@@ -1,0 +1,9 @@
+# Ignore the incoming plates directory and image files
+**/incoming_plates/
+*.jpg
+*.jpeg
+*.png
+
+# Ignore virtual environment directories and Python cache files
+**/venv/
+__pycache__/
