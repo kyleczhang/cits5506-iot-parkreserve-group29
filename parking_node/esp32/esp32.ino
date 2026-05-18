@@ -90,11 +90,11 @@ unsigned long lastRetryMillis = 0;
 const long RETRY_INTERVAL = 10000; // Check for failed uploads every 10 seconds
 
 // =========================================================
-// [新增] 异步拍照定时器变量
+// [NEW] Asynchronous capture timer variables
 // =========================================================
-bool isWaitingToCapture = false;          // 是否正在等待拍照
-unsigned long captureWaitStartMillis = 0; // 开始等待的时间戳
-const unsigned long CAPTURE_DELAY = 3000; // 停稳后等待 3 秒再拍
+bool isWaitingToCapture = false;          // Whether currently waiting to capture
+unsigned long captureWaitStartMillis = 0; // Timestamp when waiting started
+const unsigned long CAPTURE_DELAY = 3000; // Wait 3 seconds after stabilizing before capturing
 
 // =========================================================
 // [3] Time & Network Module
@@ -254,19 +254,19 @@ void captureAndUpload() {
   Serial.println("📸 Waking up camera and flushing old frames...");
   
   // =========================================================
-  // 🌟 核心修复：连拍并丢弃旧帧，清空底层硬件的缓存队列
-  // 丢弃前 1~2 帧足以清空陈旧画面，让传感器重新曝光对焦
+  // 🌟 Core Fix: Burst capture and discard old frames to clear the underlying hardware buffer queue.
+  // Discarding the first 1~2 frames is enough to clear stale images, allowing the sensor to re-expose and focus.
   // =========================================================
   camera_fb_t * fb = NULL;
   for (int i = 0; i < 2; i++) {
     fb = esp_camera_fb_get();
     if (fb) {
-      esp_camera_fb_return(fb); // 拿到后立刻丢弃释放
+      esp_camera_fb_return(fb); // Discard and release immediately after getting it
     }
   }
 
   Serial.println("📸 Capturing FRESH image for LPR...");
-  // 这一次拿到的，绝对是最新、曝光最准确的当下画面！
+  // The frame obtained this time is absolutely the latest and most accurately exposed current image!
   fb = esp_camera_fb_get(); 
   
   if(!fb) {
@@ -285,7 +285,7 @@ void captureAndUpload() {
     Serial.println("💾 Fresh image saved locally: " + filepath);
   }
   
-  // 务必记得释放这最后一张有用的帧内存
+  // Remember to release the memory of this last useful frame
   esp_camera_fb_return(fb); 
 
   // 2. Attempt immediate upload
@@ -442,7 +442,7 @@ void loop() {
     lastSensorReadMillis = currentMillis;
     float dist = getDistance();
     
-    // 🆕 [DEBUG LOG 1] 每 1 秒打印一次传感器状态和距离心跳
+    // 🆕 [DEBUG LOG 1] Print sensor status and distance heartbeat every 1 second
     static unsigned long lastDebugPrintMillis = 0;
     if (currentMillis - lastDebugPrintMillis >= 1000) {
         Serial.printf("📊 [Sensor] Dist: %.1f cm | OccCnt: %d | AvailCnt: %d | Bay: %s | LED: %s\n", 
@@ -460,7 +460,7 @@ void loop() {
         occupiedCount = 0;  
       }
       else {
-        // 🆕 [DEBUG LOG 2] 车辆处于死区 (100cm ~ 150cm)，重置计数器
+        // 🆕 [DEBUG LOG 2] Vehicle is in the deadzone (100cm ~ 150cm), reset counters
         if (occupiedCount > 0 || availableCount > 0) {
             Serial.printf("⚠️ [Sensor] Distance in deadzone (%.1f cm). Resetting counts.\n", dist);
         }
@@ -469,13 +469,13 @@ void loop() {
       }
 
       if (occupiedCount >= FILTER_LIMIT && currentBayStatus != "occupied") {
-        // 🆕 [DEBUG LOG 3] 确认连续 10 次检测达标
+        // 🆕 [DEBUG LOG 3] Confirm 10 consecutive reads meet the threshold
         Serial.println("🔒 [State Change] 10 consecutive reads < 100cm. Bay is now OCCUPIED.");
         currentBayStatus = "occupied";
         occupiedCount = 0; 
       } 
       else if (availableCount >= FILTER_LIMIT && currentBayStatus != "available") {
-        // 🆕 [DEBUG LOG 3] 确认连续 10 次检测达标
+        // 🆕 [DEBUG LOG 3] Confirm 10 consecutive reads meet the threshold
         Serial.println("🔓 [State Change] 10 consecutive reads > 150cm. Bay is now AVAILABLE.");
         currentBayStatus = "available";
         availableCount = 0; 
@@ -488,7 +488,7 @@ void loop() {
         client.publish(mqtt_topic_status, "occupied");
         lastPublishMillis = currentMillis; 
         
-        // 🆕 [DEBUG LOG 4] 打印当前 LED 状态，判断是否满足拍照条件
+        // 🆕 [DEBUG LOG 4] Print current LED state to determine if capture conditions are met
         Serial.printf("🔍 Checking Capture Conditions -> Current LED State: %s\n", currentLedState.c_str());
 
         if (currentLedState == "reserved" || currentLedState == "pending_check_in") {
@@ -496,17 +496,17 @@ void loop() {
           isWaitingToCapture = true;
           captureWaitStartMillis = currentMillis; 
         } else {
-          // 💡 很多时候是因为这里没通过，导致看起来“卡住”了
+          // 💡 Often times it's because it doesn't pass here, making it look "stuck"
           Serial.println("⏭️ Skipping camera capture: LED state is NOT 'reserved' or 'pending_check_in'.");
         }
       }
 
-      // 🆕 [DEBUG LOG 5] RISING EDGE TRIGGER: 车辆离开事件
+      // 🆕 [DEBUG LOG 5] RISING EDGE TRIGGER: Vehicle leaving event
       if (currentBayStatus == "available" && lastBayStatus == "occupied") {
         Serial.println("\n<<< EVENT: Vehicle Leaving... <<<");
         client.publish(mqtt_topic_status, "available");
         lastPublishMillis = currentMillis; 
-        isWaitingToCapture = false; // 如果还在倒计时拍照，立刻取消
+        isWaitingToCapture = false; // Cancel immediately if still counting down for capture
       }
       
       lastBayStatus = currentBayStatus; 
@@ -514,10 +514,10 @@ void loop() {
   }
 
   // ---------------------------------------------------------
-  // 🌟 Task 3: Asynchronous Capture Execution (稳车延时抓拍)
+  // 🌟 Task 3: Asynchronous Capture Execution (Delayed capture after vehicle stabilizes)
   // ---------------------------------------------------------
   if (isWaitingToCapture) {
-    // 🆕 [DEBUG LOG] 打印 3 秒倒计时，证明程序没死机，正在等待
+    // 🆕 [DEBUG LOG] Print 3-second countdown to prove the program hasn't crashed and is waiting
     static unsigned long lastWaitLogMillis = 0;
     if (currentMillis - lastWaitLogMillis >= 1000) {
         long remaining = CAPTURE_DELAY - (currentMillis - captureWaitStartMillis);
@@ -528,14 +528,14 @@ void loop() {
     }
 
     if (currentMillis - captureWaitStartMillis >= CAPTURE_DELAY) {
-      // 终极安全检查：车还在吗？(防止假动作)
+      // Ultimate safety check: Is the car still there? (Prevent false triggers)
       if (currentBayStatus == "occupied") {
         Serial.println("📸 Vehicle stabilized! Executing capture...");
         captureAndUpload();
       } else {
         Serial.println("🚫 Vehicle left before capture. Action cancelled.");
       }
-      isWaitingToCapture = false; // 任务结束，重置状态
+      isWaitingToCapture = false; // Task finished, reset state
     }
   }
 
