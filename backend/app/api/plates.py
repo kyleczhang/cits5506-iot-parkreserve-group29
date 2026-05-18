@@ -51,4 +51,8 @@ def add_plate():
 def remove_plate(plate: str):
     user = auth_service.get_by_id(get_jwt_identity())
     plate_service.remove(user=user, plate=plate)
-    return ("", 204)
+    # Return 200 + empty JSON rather than 204: eventlet's WSGI server
+    # forces Transfer-Encoding: chunked on 204 responses regardless of
+    # explicit Content-Length, which is illegal per RFC 7230 §3.3.1 and
+    # makes Vite's dev-proxy synthesise a 500 in the browser.
+    return jsonify({}), 200
