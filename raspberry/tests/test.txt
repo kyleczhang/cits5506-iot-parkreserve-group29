@@ -1,0 +1,372 @@
+================================================================
+ParkReserve Raspberry Pi Gateway — Complete Test Interface Documentation
+Updated: 2026-05-13
+================================================================
+
+================================================================
+[Project Structure]
+================================================================
+raspberry/
+├── main.py
+├── config/
+│   └── settings.py
+├── services/
+│   ├── control_service.py   (main controller: MQTT + LPR scheduling)
+│   ├── image_receiver.py    (HTTP receiver for ESP32 images)
+│   └── state_machine.py     (state machine for each parking bay)
+└── tests/
+    └── test.txt             (this file)
+
+================================================================
+[Startup Command]
+================================================================
+python main.py
+
+================================================================
+[Current Configuration (settings.py)]
+================================================================
+HiveMQ Host:     b57eba64e4174cb38be14e7225b632fa.s1.eu.hivemq.cloud
+HiveMQ Username: yuancong
+HiveMQ Password: Yuancong29!
+HTTP Port:        5000
+Local MQTT Port:  1883
+NO_SHOW_GRACE:   300s (production value; change to 30 for testing)
+CHECK_IN_GRACE:  300s (production value; change to 30 for testing)
+BAY_CODES:       A1, A2, A3
+
+================================================================
+[LED Command String Reference (Pi → ESP32)]
+================================================================
+State                   LED Command String        ESP32 Behavior
+available             → "available"           → green light steady
+reserved              → "reserved"            → yellow light steady
+pending_check_in      → "pending_check_in"    → yellow light blinking
+reserved_checked_in   → "reserved_checked_in" → red light steady
+occupied (no booking) → "reserved_checked_in" → red light steady
+conflict              → "conflict_strong"     → red light blinking + buzzer
+
+================================================================
+[Sensor Message Format (ESP32 → Pi, both supported)]
+================================================================
+# Plain string format (what ESP32 actually sends)
+mosquitto_pub -h localhost -t "bay/1/status" -m "occupied"
+mosquitto_pub -h localhost -t "bay/1/status" -m "available"
+
+# JSON format (compatible for local testing)
+mosquitto_pub -h localhost -t "bay/A1/status" -m '{"occupied":true,"distance_cm":12.0}'
+mosquitto_pub -h localhost -t "bay/A1/status" -m '{"occupied":false,"distance_cm":280.0}'
+
+================================================================
+[1. Interfaces for Receiving Backend Messages (Backend → Pi)]
+================================================================
+
+Interface 1: Reservation Created
+Topic: cloud/bay/A1/reservation
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"create","reservation_id":"550e8400-e29b-41d4-a716-446655440000","user_id":"660e8400-e29b-41d4-a716-446655440001","bound_plates":["CZH5506"],"expected_arrival_time":"2026-12-31T10:00:00+00:00","ts":"2026-05-13T10:00:00+00:00"}'
+Expected Pi log:
+  [A1] available → reserved
+  [LocalMQTT] → bay/A1/led  'reserved'
+
+---
+
+Interface 2: Plate List Update
+Topic: cloud/bay/A1/reservation
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"update_plates","reservation_id":"550e8400-e29b-41d4-a716-446655440000","bound_plates":["CZH5506","9NEW999"],"ts":"2026-05-13T10:01:00+00:00"}'
+Expected Pi log:
+  [A1] Bound plates updated: ['CZH5506', '9NEW999']
+
+---
+
+Interface 3: Manual check-in (requires current state to be pending_check_in)
+Topic: cloud/bay/A1/reservation
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"check_in","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:05:00+00:00"}'
+Expected Pi log:
+  [A1] pending_check_in → reserved_checked_in  event=check_in_confirmed
+  [LocalMQTT] → bay/A1/led  'reserved_checked_in'
+
+---
+
+Interface 4: Reservation Cancelled
+Topic: cloud/bay/A1/reservation
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"cancel","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:02:00+00:00"}'
+Expected Pi log:
+  [A1] reserved → available
+  [LocalMQTT] → bay/A1/led  'available'
+
+---
+
+Interface 5: release (Backend actively releases the bay)
+Topic: cloud/bay/A1/reservation
+reason options: no_show / completed / abandoned / admin_override
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"release","reason":"completed","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:10:00+00:00"}'
+Expected Pi log:
+  [A1] Received release, reason: completed
+  [A1] → available (no vehicle) or occupied (vehicle present)
+
+---
+
+Interface 6: expire_check_in (Backend notifies check-in window has expired)
+Topic: cloud/bay/A1/reservation
+Test command:
+mosquitto_pub -h localhost -t "cloud/bay/A1/reservation" \
+  -m '{"action":"expire_check_in","reservation_id":"550e8400-e29b-41d4-a716-446655440000","ts":"2026-05-13T10:10:00+00:00"}'
+Expected Pi log:
+  [A1] Received expire_check_in
+  [A1] → available or occupied
+
+---
+
+Interface 7: Resync (Backend requests Pi to re-report all states after restart)
+Topic: cloud/system/resync
+Test command:
+mosquitto_pub -h localhost -t "cloud/system/resync" -m '{"request":"replay"}'
+Expected Pi log:
+  [CloudMQTT] Received resync request, re-reporting all states
+  [A1] resync → re-reporting state available
+  [A2] resync → re-reporting state available
+  [A3] resync → re-reporting state available
+
+================================================================
+[2. Data Pi Sends to Backend (Backend validation)]
+================================================================
+Backend subscribe command:
+mosquitto_sub \
+  -h b57eba64e4174cb38be14e7225b632fa.s1.eu.hivemq.cloud \
+  -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
+  -u yuancong -P Yuancong29! \
+  -t "cloud/bay/+/state" \
+  -t "cloud/bay/+/event" \
+  -t "cloud/system/heartbeat"
+
+---
+
+Scenario A: Vehicle arrives at reserved bay → LPR match → auto_check_in ✅
+Steps:
+  1. Send reservation (see Interface 1)
+  2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
+  3. curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
+       -H "Content-Type: image/jpeg" \
+       -H "X-API-Key: ParkReserve-Group29-SuperSecret" \
+       -H "X-Timestamp: 20260513_100000" \
+       --data-binary "@/Users/congyuan/Desktop/plate.jpg"
+
+Expected Backend messages in order:
+  // cloud/bay/A1/state
+  {"state":"pending_check_in","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+  // cloud/bay/A1/event
+  {"event":"pending_check_in","ts":"...","event_id":"...","reservation_id":"550e8400-..."}
+
+  // cloud/bay/A1/state (after LPR recognition)
+  {"state":"reserved_checked_in","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+  // cloud/bay/A1/event
+  {"event":"auto_check_in","ts":"...","event_id":"...","reservation_id":"550e8400-...","recognised_plate":"CZH5506","lpr_confidence":0.95}
+
+---
+
+Scenario B: LPR mismatch → conflict_strong ✅
+Preparation: change mock_plate in control_service.py
+  self.mock_plate = "9ZZZ999"   # not in bound plates list
+
+Steps:
+  1. Send reservation
+  2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
+  3. curl upload image
+
+Expected Backend messages:
+  // cloud/bay/A1/state
+  {"state":"conflict","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+  // cloud/bay/A1/event
+  {"event":"conflict_strong","ts":"...","event_id":"...","reservation_id":"550e8400-...","recognised_plate":"9ZZZ999","lpr_confidence":0.95}
+
+---
+
+Scenario C: Wrong vehicle leaves after conflict_strong → Backend restores reservation
+Steps:
+  1. Complete Scenario B (enter conflict state)
+  2. mosquitto_pub -h localhost -t "bay/A1/status" -m "available"
+
+Expected Pi log:
+  [A1] Vehicle left after conflict, reporting available, awaiting Backend decision
+  [A1] conflict → available
+  [LocalMQTT] → bay/A1/led  'available'
+
+Expected Backend message:
+  // cloud/bay/A1/state
+  {"state":"available","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+After Backend processes and re-sends create, Pi receives it:
+  [A1] Restoring reservation cache during conflict, waiting for vehicle to leave to return to reserved
+  (currently available state; after receiving create it transitions to reserved)
+
+---
+
+Scenario D: LPR confidence too low → manual check-in timeout → conflict (weak)
+Preparation: change mock_confidence in control_service.py
+  self.mock_confidence = 0.50   # below 0.80 threshold
+  and change MANUAL_CHECKIN_GRACE_SECONDS in settings.py to 30 (for testing)
+
+Steps:
+  1. Send reservation
+  2. mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
+  3. curl upload image (LPR confidence too low, stays at pending_check_in)
+  4. Wait 30 seconds for timeout
+
+Expected Pi log (after timeout):
+  [A1] Manual check-in timeout → conflict (Backend handles conflict_weak internally)
+  [LocalMQTT] → bay/A1/led  'conflict_strong'
+
+Expected Backend message (state only, no event):
+  // cloud/bay/A1/state
+  {"state":"conflict","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+---
+
+Scenario E: Reservation made but vehicle never arrives → no_show
+Preparation: change NO_SHOW_GRACE_SECONDS in settings.py to 30 (for testing),
+             set expected_arrival_time to a past time
+
+Steps:
+  1. Send reservation (set arrival_time to current time)
+  2. Do not send vehicle arrival message, wait 30 seconds for timeout
+
+Expected Pi log:
+  [A1] No-show → releasing bay (Backend handles no_show event internally)
+  [LocalMQTT] → bay/A1/led  'available'
+
+Expected Backend message (state only, no event):
+  // cloud/bay/A1/state
+  {"state":"available","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+---
+
+Scenario F: Vehicle arrives with no reservation → occupied
+Steps:
+  mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
+
+Expected Backend message:
+  // cloud/bay/A1/state
+  {"state":"occupied","last_distance_cm":0.0,"ts":"...","event_id":"..."}
+
+Pi sends to ESP32:
+  bay/A1/led → "reserved_checked_in" (red light steady)
+
+---
+
+Scenario G: Heartbeat (automatic every 10 seconds)
+Expected Backend message every 10 seconds:
+  // cloud/system/heartbeat
+  {"pi_id":"pi-01","ts":"2026-05-13T10:00:00+00:00"}
+
+================================================================
+[3. Interfaces for Receiving ESP32 Messages]
+================================================================
+
+Interface 1: Sensor status (sent every 2 seconds)
+Topic: bay/<bay_id>/status
+ESP32 send format (plain string):
+  "occupied"   → vehicle present
+  "available"  → no vehicle
+
+Expected Pi behavior:
+  with reservation:    "occupied" → pending_check_in
+  without reservation: "occupied" → occupied
+  "available" → depending on context → reserved or available
+
+---
+
+Interface 2: License plate image upload (triggered once when vehicle arrives)
+Endpoint: POST http://<pi_ip>:5000/api/v1/bays/<bay_id>/image
+Headers:
+  Content-Type: image/jpeg
+  X-API-Key: ParkReserve-Group29-SuperSecret
+  X-Timestamp: 20260513_100000  (optional)
+Body: raw binary JPEG
+
+Test command:
+curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
+  -H "Content-Type: image/jpeg" \
+  -H "X-API-Key: ParkReserve-Group29-SuperSecret" \
+  -H "X-Timestamp: 20260513_100000" \
+  --data-binary "@/Users/congyuan/Desktop/plate.jpg"
+
+Expected Pi response (202):
+  {"message": "Image securely received", "file": "bay_A1_20260513_100000.jpg"}
+
+Expected Pi log:
+  [ImageReceiver] Saved: ./tmp/parkReserve/images/bay_A1_20260513_100000.jpg
+  [LPR] EasyOCR raw results: [...]
+  [LPR] Best result: CZH5506, confidence: 0.92
+  [A1] pending_check_in → reserved_checked_in  event=auto_check_in
+
+================================================================
+[4. Commands Pi Sends to ESP32]
+================================================================
+
+Command 1: Green light steady (available)
+Topic: bay/A1/led, payload: "available"
+Manual test command:
+mosquitto_pub -h localhost -t "bay/A1/led" -m "available"
+
+Command 2: Yellow light steady (reserved)
+Topic: bay/A1/led, payload: "reserved"
+Manual test command:
+mosquitto_pub -h localhost -t "bay/A1/led" -m "reserved"
+
+Command 3: Yellow light blinking (pending_check_in)
+Topic: bay/A1/led, payload: "pending_check_in"
+Manual test command:
+mosquitto_pub -h localhost -t "bay/A1/led" -m "pending_check_in"
+
+Command 4: Red light steady (reserved_checked_in / occupied)
+Topic: bay/A1/led, payload: "reserved_checked_in"
+Manual test command:
+mosquitto_pub -h localhost -t "bay/A1/led" -m "reserved_checked_in"
+
+Command 5: Red light blinking + buzzer (conflict)
+Topic: bay/A1/led, payload: "conflict_strong"
+Manual test command:
+mosquitto_pub -h localhost -t "bay/A1/led" -m "conflict_strong"
+
+================================================================
+[5. Common Debug Commands]
+================================================================
+
+# View current status and reservation data for all bays
+curl http://localhost:5000/status
+
+# Health check
+curl http://localhost:5000/health
+
+# Simulate vehicle arriving
+mosquitto_pub -h localhost -t "bay/A1/status" -m "occupied"
+
+# Simulate vehicle leaving
+mosquitto_pub -h localhost -t "bay/A1/status" -m "available"
+
+# Upload image to trigger LPR
+curl -X POST "http://localhost:5000/api/v1/bays/A1/image" \
+  -H "Content-Type: image/jpeg" \
+  -H "X-API-Key: ParkReserve-Group29-SuperSecret" \
+  -H "X-Timestamp: 20260513_100000" \
+  --data-binary "@/Users/congyuan/Desktop/speak-retell.jpg"
+
+# Subscribe to LED commands received by ESP32 (verify Pi sends correctly)
+mosquitto_sub -h localhost -t "bay/+/led"
+
+# Subscribe to all messages received by Backend
+mosquitto_sub -h localhost -t "cloud/#"
+
+================================================================
