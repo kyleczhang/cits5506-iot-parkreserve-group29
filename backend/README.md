@@ -1,159 +1,205 @@
-# ParkReserve — Backend (Subsystem F)
+# ParkReserve Backend
 
-Flask + PostgreSQL + MQTT + Socket.IO cloud backend for the ParkReserve IoT parking reservation system (CITS5506 group 29, S1 2026).
+Flask + PostgreSQL + MQTT + Socket.IO backend for the ParkReserve IoT parking-reservation system.
 
-This is the "how-to-guide" required by the *Code → Exemplary* row of the project-report rubric: every command below is copy-pasteable and should work on a clean Ubuntu 24.04 or macOS host.
+## Overview
 
-## What it does
+Current backend responsibilities:
 
-- Ingests MQTT bay-state mirrors and state-machine events from the Raspberry Pi edge gateway (topics `cloud/bay/<code>/state` and `cloud/bay/<code>/event`).
-- Persists bay state, reservations, sensor readings, audit events, conflicts, and mock-payment ledger rows in PostgreSQL.
-- Exposes a REST + Socket.IO API consumed by the React dashboard.
-- Publishes reservation commands back to the Pi on `cloud/bay/<code>/reservation` with QoS 1, and requests replays on `cloud/system/resync`.
-- Detects strong / weak conflicts, supports JPEG evidence upload for strong conflicts, and exposes admin conflict-resolution endpoints.
-- Runs a safety-net reconcile sweep every 30 seconds by default and a periodic evidence-image purge job.
+- expose REST endpoints under `/api/v1`
+- push realtime updates over Socket.IO namespace `/ws`
+- persist bays, reservations, plates, payments, conflicts, bay events, and sensor readings in PostgreSQL
+- consume bay state / event messages from MQTT
+- publish reservation commands back to the edge gateway
+- run background jobs for reservation reconciliation and evidence cleanup
 
-The full design is in [`../doc/backend/backend-implementation-plan.md`](../doc/backend/backend-implementation-plan.md) and the schema in [`../doc/backend/database-design.md`](../doc/backend/database-design.md).
+In local development, `make dev` starts the whole runtime as one process: HTTP + Socket.IO + MQTT + scheduled jobs.
 
-## Requirements
+MQTT deployment model:
 
-- Python **3.11** (pinned in `pyproject.toml`)
-- PostgreSQL **16** — **required in every environment including tests**
-- Docker (optional, recommended for local dev)
+- backend <-> Raspberry Pi uses the cloud-side MQTT broker
+- in this project that cloud-side broker is HiveMQ
+- broker host, port, TLS, username, and password are configured via backend environment variables
 
-## Quick start — local dev with Docker
+## Business Rules
 
-The backend now runs as **one long-lived process**:
+The backend owns the main reservation and payment rules, while the Pi owns the physical bay state machine.
 
-- **web runtime** — HTTP, Socket.IO, outbound MQTT publisher, inbound MQTT consumer, APScheduler jobs (`make dev`)
+Current backend-side rules:
 
-One-time setup:
+- a user must bind at least one licence plate before creating a reservation
+- a reservation must be in the future and within the configured booking window
+- a bay can have only one open reservation at a time
+- reservation creation is gated on a successful mock deposit pre-authorization
+- the backend publishes reservation commands to the Pi together with the user's bound plates for LPR matching
+- cancelling 15 minutes or more before arrival releases the full deposit
+- cancelling within the late-cancel cutoff captures a penalty and releases the remainder
+- no-show and weak-conflict outcomes also capture a penalty and release the remainder
+- a strong conflict is treated as a victim case for the reserving user, so the held deposit is refunded in full
+- manual check-in is only a fallback; automatic check-in via plate match is the normal path
 
-```bash
-# from backend/
-make install            # venv + deps
-cp .env.example .env    # edit if you want
-make up                 # starts postgres + mosquitto via docker-compose
-make migrate            # applies Alembic migrations (seeds 3 demo bays)
-make seed               # creates demo users, plates, and mock-payment cards
-```
+The mock-payment service is idempotent, so repeated MQTT messages, retries, or double-clicked actions do not create duplicate charges.
 
-Then start the backend:
+## Prerequisites
 
-```bash
-make dev                # web + MQTT + jobs on :8000
-```
+- Python `3.11`
+- PostgreSQL `16`
+- Docker and Docker Compose if you want the provided local Postgres + Mosquitto stack
 
-Or, if you want to fully reset the local stack and immediately boot the backend in one go:
+## Quick Start
 
-```bash
-make reset-run          # make down -> make up -> make migrate -> make seed -> make dev
-```
-
-## Demo scenarios
-
-The seed runner is designed for **repeatable demos**. Every seed command clears
-the application tables and rebuilds a known state from scratch.
-
-Base dataset:
+From `backend/`:
 
 ```bash
-make seed               # same as make seed-demo; demo users, bays, plates, cards
+make install
+cp .env.example .env
+make up
+make migrate
+make seed
+make dev
 ```
 
-Scenario shortcuts:
+At that point:
+
+- API base URL: `http://localhost:8000/api/v1`
+- health check: `http://localhost:8000/healthz`
+- readiness check: `http://localhost:8000/readyz`
+
+`make up` starts:
+
+- PostgreSQL on `localhost:5432`
+- Mosquitto on `localhost:1883`
+
+The bundled Mosquitto container is only a local-development convenience. In the intended full deployment, the backend connects to the Pi side through the configured cloud MQTT broker rather than a local in-repo broker.
+
+If you want a clean reset and then an immediate boot:
 
 ```bash
-make seed-ready         # demo + one active reservation approaching arrival
-make seed-conflict      # demo + one pending-check-in conflict scenario
-make seed-checked-in    # demo + one reservation already checked in
-make seed-history       # demo + closed reservations and payment-history records
+make reset-run
 ```
 
-If you want the raw CLI, list dataset names first:
+## Seed Data And Demo Accounts
+
+`make seed` truncates application tables and rebuilds a known demo dataset. The base seed creates:
+
+- 3 bays: `A1`, `A2`, `A3`
+- 5 users
+- demo licence plates
+- mock payment cards
+
+Seeded accounts:
+
+| Role | Email | Password |
+|------|-------|----------|
+| driver | `nyx@parkreserve.local` | `nyxParkreserve29!` |
+| driver | `riya@parkreserve.local` | `riyaParkreserve29!` |
+| driver | `yuan@parkreserve.local` | `yuanParkreserve29!` |
+| driver | `cheng@parkreserve.local` | `chengParkreserve29!` |
+| admin | `admin@parkreserve.local` | `adminParkreserve29!` |
+
+Scenario shortcuts layer extra reservations and payment history on top of that base dataset:
+
+```bash
+make seed-ready       # one upcoming active reservation, for booking/arrival/check-in demos
+make seed-conflict    # one pending-check-in reservation, for conflict and admin resolution demos
+make seed-checked-in  # one reservation already checked in, for leave-bay/completion demos
+make seed-history     # closed reservations and ledger history, for payment outcome demos
+```
+
+To inspect or combine datasets manually:
 
 ```bash
 .venv/bin/python scripts/seed.py --list
-```
-
-Example: load multiple scenarios in one reset:
-
-```bash
-.venv/bin/python scripts/seed.py \
-  --dataset integration_ready \
-  --dataset payments_history
-```
-
-Recommended presentation flow:
-
-1. `make seed-ready` for the reserve -> arrive / check-in path.
-2. `make seed-conflict` for the strong-conflict and admin-resolution path.
-3. `make seed-history` for payment outcomes and historical evidence.
-
-Optional — simulate the Raspberry Pi (in a second terminal):
-
-```bash
-.venv/bin/python scripts/mock_pi_publisher.py
-```
-
-This publishes simulated bay-state / event traffic for A1 / A2 / A3. The `cycle` scenario runs every 3 seconds by default. The backend process consumes those messages and the dashboard updates in real time — if `make dev` isn't running, nothing visible happens.
-
-Optional third terminal to tap the command channel that would normally go to the Pi:
-
-```bash
-.venv/bin/python scripts/mock_pi_subscriber.py
+.venv/bin/python scripts/seed.py --dataset integration_ready --dataset payments_history
 ```
 
 ## Configuration
 
-Every setting is an env var; defaults target local Docker. See [`.env.example`](.env.example) for the full list. The most common:
+Settings are loaded from environment variables, with `backend/.env` read automatically by the runtime. Start from [`.env.example`](.env.example).
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `DATABASE_URL` | Postgres DSN (always postgres — no sqlite) | `postgresql+psycopg://parkreserve:parkreserve@localhost:5432/parkreserve` |
-| `PORT` | Flask / Gunicorn bind port | `8000` |
-| `MQTT_HOST`, `MQTT_PORT` | Broker to connect to | `localhost:1883` |
-| `MQTT_TLS` | `true` when pointing at HiveMQ Cloud | `false` |
-| `MQTT_USERNAME` / `MQTT_PASSWORD` | HiveMQ creds | empty |
-| `MQTT_ENABLED` | set `false` in unit tests | `true` |
-| `MQTT_TOPIC_PREFIX` | Topic root for bay / system channels | `cloud` |
-| `BOOKING_WINDOW_MINUTES` | Max advance booking window | `60` |
-| `ARRIVAL_GRACE_MINUTES` | No-show grace after expected arrival | `5` |
-| `CHECK_IN_GRACE_MINUTES` | Manual check-in grace after `pending_check_in` | `5` |
-| `LATE_CANCEL_CUTOFF_MINUTES` | Late-cancel threshold | `15` |
-| `DEPOSIT_CENTS` | Mock pre-auth hold amount | `1000` |
-| `PENALTY_CENTS` | Default penalty capture amount | `500` |
-| `RECONCILE_INTERVAL_SECONDS` | Safety-net sweep interval | `30` |
-| `CORS_ORIGINS` | CSV of allowed origins | `http://localhost:3000` |
+Common variables:
 
-## REST + Socket.IO API
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | PostgreSQL DSN |
+| `PORT` | backend HTTP port |
+| `CORS_ORIGINS` | comma-separated allowed origins |
+| `MQTT_ENABLED` | enable inbound/outbound MQTT |
+| `MQTT_HOST`, `MQTT_PORT` | broker address |
+| `MQTT_TLS` | turn on TLS for the HiveMQ broker |
+| `MQTT_USERNAME`, `MQTT_PASSWORD` | broker credentials |
+| `MQTT_TOPIC_PREFIX` | topic root, default `cloud` |
+| `BOOKING_WINDOW_MINUTES` | max lead time for reservation creation |
+| `ARRIVAL_GRACE_MINUTES` | grace before no-show logic |
+| `CHECK_IN_GRACE_MINUTES` | grace after `pending_check_in` |
+| `LATE_CANCEL_CUTOFF_MINUTES` | late-cancel threshold |
+| `PLATES_PER_USER_MAX` | per-user plate cap |
+| `LPR_CONFIDENCE_THRESHOLD` | accepted LPR threshold |
+| `DEPOSIT_CENTS` | mock deposit hold amount |
+| `PENALTY_CENTS` | mock penalty capture amount |
+| `EVIDENCE_STORAGE_PATH` | stored conflict JPEG directory |
+| `EVIDENCE_UPLOAD_TOKEN` | bearer token for internal evidence upload |
+| `RECONCILE_INTERVAL_SECONDS` | reservation reconciliation job cadence |
+| `PURGE_INTERVAL_HOURS` | evidence cleanup job cadence |
 
-Base path: `/api/v1`. Quick reference:
+Note: the values shown in [`.env.example`](.env.example) are the intended local-dev defaults. If `.env` is absent, the Python settings layer still applies built-in fallbacks.
 
-| Method | Path | Auth |
-|--------|------|------|
-| POST | `/auth/register` | — |
-| POST | `/auth/login` | — |
-| GET  | `/auth/me` | JWT |
-| GET  | `/bays` | — |
-| GET  | `/bays/<code>` | — |
-| GET  | `/bays/<code>/events` | Admin JWT |
-| GET  | `/users/me/plates` | JWT |
-| POST | `/users/me/plates` | JWT |
-| DELETE | `/users/me/plates/<plate>` | JWT |
-| POST | `/reservations` | JWT |
-| GET  | `/reservations` | JWT |
-| GET  | `/reservations/<id>` | JWT / Admin JWT |
-| POST | `/reservations/<id>/cancel` | JWT |
-| POST | `/reservations/<id>/check-in` | JWT |
-| GET  | `/users/me/payments` | JWT |
-| GET  | `/users/me/payments/<id>` | JWT |
-| GET  | `/conflicts` | Admin JWT |
-| GET  | `/conflicts/<id>/evidence` | Admin JWT |
-| POST | `/conflicts/<id>/resolve` | Admin JWT |
-| POST | `/internal/conflicts/evidence` | Shared bearer token |
+For this project, these MQTT variables should point to the HiveMQ broker used for the backend/Pi link.
 
-Socket.IO namespace `/ws` broadcasts:
+## API Summary
+
+Base path: `/api/v1`
+
+Auth:
+
+| Method | Path | Access |
+|--------|------|--------|
+| `POST` | `/auth/register` | public |
+| `POST` | `/auth/login` | public |
+| `GET` | `/auth/me` | JWT |
+
+Bays:
+
+| Method | Path | Access |
+|--------|------|--------|
+| `GET` | `/bays` | public |
+| `GET` | `/bays/<code>` | public |
+| `GET` | `/bays/<code>/events` | admin JWT |
+
+Driver resources:
+
+| Method | Path | Access |
+|--------|------|--------|
+| `GET` | `/users/me/plates` | JWT |
+| `POST` | `/users/me/plates` | JWT |
+| `DELETE` | `/users/me/plates/<plate>` | JWT |
+| `POST` | `/reservations` | JWT |
+| `GET` | `/reservations` | JWT |
+| `GET` | `/reservations/<id>` | owner or admin JWT |
+| `POST` | `/reservations/<id>/cancel` | JWT |
+| `POST` | `/reservations/<id>/check-in` | JWT |
+| `GET` | `/users/me/payments` | JWT |
+| `GET` | `/users/me/payments/<id>` | JWT |
+
+Admin conflict workflow:
+
+| Method | Path | Access |
+|--------|------|--------|
+| `GET` | `/conflicts` | admin JWT |
+| `GET` | `/conflicts/<id>/evidence` | admin JWT |
+| `POST` | `/conflicts/<id>/resolve` | admin JWT |
+| `POST` | `/internal/conflicts/evidence` | shared bearer token |
+
+Health endpoints are outside `/api/v1`:
+
+- `GET /healthz`: process liveness
+- `GET /readyz`: returns `200` only when the database is reachable
+
+## Realtime Events
+
+Socket.IO namespace: `/ws`
+
+Current server-to-client events:
 
 - `bay.updated`
 - `reservation.updated`
@@ -166,63 +212,31 @@ Socket.IO namespace `/ws` broadcasts:
 - `payment.refunded`
 - `payment.penalty_captured`
 
-Health: `GET /healthz` is liveness; `GET /readyz` returns 200 once the database is reachable.
-
 ## Tests
 
-All tests run against **real PostgreSQL** via `pytest-postgresql`. No SQLite, no mocked database.
+Run the backend test suite with:
 
 ```bash
 make test
 ```
 
-This spins a dedicated PostgreSQL cluster in a temporary directory, enables the required PostgreSQL extensions, builds the schema from SQLAlchemy metadata for each test, runs the suite, and tears the cluster down. Migration coverage is exercised separately by `tests/test_alembic_migration.py`. Coverage gate is 90 %. See `tests/conftest.py` for the fixture layer.
+The suite uses real PostgreSQL via `pytest-postgresql`; it does not swap in SQLite. Coverage is enforced at 90% in [pyproject.toml](./pyproject.toml).
 
-## Database migrations
+## Migrations
 
-```bash
-make migrate                         # apply latest
-make revision m='add xyz column'     # generate a new revision
-```
-
-Alembic config is in `alembic.ini` / `migrations/`. The initial revision `20260421_01_initial` creates the PostgreSQL enums, all domain tables, the trigger-backed per-user plate cap, the partial unique indexes from the design doc, and seeds the three demo parking bays.
-
-## Deploying to AWS EC2 (demo day)
-
-The deployment target is `t3.micro` Ubuntu 24.04 with PostgreSQL colocated, Caddy in front for HTTPS, and **one** systemd unit for the backend runtime:
-
-- `parkreserve-web.service` — Gunicorn + eventlet worker; HTTP, Socket.IO, inbound MQTT, outbound MQTT publisher, APScheduler jobs.
+Alembic files live in [`migrations/`](./migrations/) and are driven by [`alembic.ini`](./alembic.ini).
 
 ```bash
-# on the EC2 host, as a sudo user
-curl -fsSL https://raw.githubusercontent.com/<org>/<repo>/main/backend/deploy/bootstrap.sh | bash
+make migrate
+make revision m='add new column'
 ```
 
-`deploy/bootstrap.sh` installs Python 3.11, PostgreSQL 16, Caddy, clones or updates the repo into `/opt/parkreserve`, creates `.env` if missing, runs migrations, and enables `parkreserve-web` plus `caddy`.
+## Deployment Notes
 
-Note: the bootstrap script does **not** install Mosquitto on EC2. In production you should either point `MQTT_HOST` / `MQTT_PORT` / `MQTT_TLS` at a reachable broker such as HiveMQ Cloud, or provision a broker separately.
+The repo includes deployment helpers in [`deploy/`](./deploy/):
 
-Minimum manual steps:
+- [`deploy/bootstrap.sh`](./deploy/bootstrap.sh)
+- [`deploy/parkreserve-web.service`](./deploy/parkreserve-web.service)
+- [`deploy/Caddyfile`](./deploy/Caddyfile)
 
-1. Install PostgreSQL 16, Python 3.11, Caddy, and build prerequisites.
-2. Create the `parkreserve` PostgreSQL role and database.
-3. Clone the repo into `/opt/parkreserve`, create the backend virtualenv, and install the package.
-4. Create `backend/.env` with `DATABASE_URL`, JWT secrets, CORS origins, and MQTT broker settings.
-5. Run `alembic upgrade head` and optionally `make seed`.
-6. Install `deploy/parkreserve-web.service` and `deploy/Caddyfile`, update the domain, then enable the service.
-
-Logs:
-
-```bash
-journalctl -u parkreserve-web       -f
-```
-
-Health probes: `/healthz` is liveness, `/readyz` returns 200 once the database is reachable.
-
-## Project layout
-
-Key directories are summarised below.
-
-## License
-
-MIT. Part of CITS5506 group 29 coursework.
+The intended deployed runtime is still the same application shape as local dev: one backend service process running HTTP, Socket.IO, MQTT, and scheduled jobs.
